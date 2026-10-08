@@ -1,6 +1,8 @@
 # Viper API - Backend
 
-API RESTful para el sistema de gestión integral de **La Rochelle Tennis Club**. Este servicio gestiona la lógica de negocio, la concurrencia de reservas, la organización de torneos y la comunicación con la base de datos.
+**Viper** es una plataforma SaaS B2B2C (Software as a Service) para la gestión integral de múltiples clubes deportivos. Los clubes (B2B) contratan la plataforma y ofrecen a sus socios y jugadores (B2C) una experiencia digital unificada.
+
+Esta API RESTful es el motor transaccional del sistema SaaS multicliente: gestiona la lógica de negocio, la concurrencia de reservas, la organización de torneos y la comunicación con la base de datos, manteniendo los datos de cada club aislados dentro de una misma plataforma.
 
 ## 🛠️ Stack Tecnológico
 * **Entorno:** Node.js
