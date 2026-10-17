@@ -1,6 +1,6 @@
 import { Router } from 'express'
-import { autenticar, autorizar } from '../../../middlewares/autenticacion.middleware.js'
-import { obtenerActividad } from '../controlador.actividad.js'
+import { autenticar, autorizar } from '../../middlewares/autenticacion.middleware.js'
+import { obtenerActividad } from './controlador.actividad.js'
 
 const router = Router()
 

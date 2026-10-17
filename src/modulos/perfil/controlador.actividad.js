@@ -1,4 +1,4 @@
-import { listarInscripcionesDeJugador } from './actividad/modelo.actividad.js'
+import { listarInscripcionesDeJugador } from './modelo.actividad.js'
 
 // GET /api/perfil/actividad  (CU 1.3 · A2, solo JUGADOR)
 // La forma de la respuesta ya queda fija para cuando existan los demás módulos:

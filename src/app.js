@@ -10,7 +10,7 @@ import rutasConsultaUsuarios from './modulos/usuarios/rutas.consulta.usuarios.js
 import rutasRolUsuarios from './modulos/usuarios/rutas.rol.usuarios.js'
 import rutasEstadoUsuarios from './modulos/usuarios/rutas.estado.usuarios.js'
 import rutasContactoUsuarios from './modulos/usuarios/rutas.contacto.usuarios.js'
-import rutasActividad from './modulos/perfil/actividad/rutas.actividad.js'
+import rutasActividad from './modulos/perfil/rutas.actividad.js'
 
 const app = express()
 

@@ -1,4 +1,4 @@
-import { pool } from '../../../config/conexion.bd.js'
+import { pool } from '../../config/conexion.bd.js'
 
 // Últimas inscripciones a torneos de un jugador, ya sea como titular o como compañero (Pádel).
 // Las más recientes primero; incluye las ANULADAS para que se vea el historial.
