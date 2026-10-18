@@ -1,3 +1,4 @@
+import { puedeTransicionar } from './estados.torneos.js'
 // Reglas de visibilidad y acciones de los torneos según estado y rol (CU 3.1, Anexo B y Anexo C).
 // Están juntas acá para que el listado, el detalle y las tareas siguientes usen las mismas.
 
@@ -25,9 +26,12 @@ export const accionesPermitidas = (torneo, rol) => {
   const { estado } = torneo
 
   if (gestionaTorneos(rol)) {
-    if (estado === 'PLANIFICADO') acciones.push('EDITAR', 'ABRIR_INSCRIPCIONES')
+    if (estado === 'PLANIFICADO') acciones.push('EDITAR')
+    // Abrir y cancelar salen de la misma tabla que valida el backend (estados.torneos.js).
+    // Cerrar se pide aparte porque EN_CURSO → INSCRIPCIONES_CERRADAS es la regeneración del cuadro, no un cierre.
+    if (puedeTransicionar(estado, 'INSCRIPCIONES_ABIERTAS')) acciones.push('ABRIR_INSCRIPCIONES')
     if (estado === 'INSCRIPCIONES_ABIERTAS') acciones.push('CERRAR_INSCRIPCIONES')
-    if (VISTAS.activos.includes(estado)) acciones.push('CANCELAR')
+    if (puedeTransicionar(estado, 'CANCELADO')) acciones.push('CANCELAR')
   }
   if (rol === 'ADMINISTRADOR' && estado === 'FINALIZADO') acciones.push('ARCHIVAR')
 
