@@ -11,6 +11,8 @@ import rutasRolUsuarios from './modulos/usuarios/rutas.rol.usuarios.js'
 import rutasEstadoUsuarios from './modulos/usuarios/rutas.estado.usuarios.js'
 import rutasContactoUsuarios from './modulos/usuarios/rutas.contacto.usuarios.js'
 import rutasActividad from './modulos/perfil/rutas.actividad.js'
+import rutasTorneos from './modulos/torneos/rutas.torneos.js'
+import rutasCategorias from './modulos/torneos/rutas.categorias.js'
 
 const app = express()
 
@@ -45,6 +47,8 @@ app.use('/api/usuarios', rutasRolUsuarios)
 app.use('/api/usuarios', rutasEstadoUsuarios)
 app.use('/api/usuarios', rutasContactoUsuarios)
 app.use('/api/perfil/actividad', rutasActividad)
+app.use('/api/torneos', rutasTorneos)
+app.use('/api/categorias', rutasCategorias)
 
 // Ruta no encontrada
 app.use((req, res) => {
