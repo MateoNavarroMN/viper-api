@@ -1,5 +1,6 @@
 import { buscarCategoriaPorId } from './modelo.categorias.js'
 import { buscarTorneoPorId, crearTorneo, editarTorneoPlanificado, listarTorneos } from './modelo.torneos.js'
+import { buscarInscripcionActivaDeJugador } from './modelo.inscripciones.js'
 import { VISTAS, accionesPermitidas, estadosVisibles } from './acciones.torneos.js'
 
 const DISCIPLINAS = ['TENIS', 'PADEL']
@@ -99,7 +100,20 @@ export const obtener = async (req, res) => {
     if (!torneo || !estadosVisibles(req.usuario.rol).includes(torneo.estado)) {
       return res.status(404).json({ mensaje: 'Torneo no encontrado' })
     }
-    return res.status(200).json({ torneo: conAcciones(torneo, req.usuario.rol) })
+
+    const respuesta = conAcciones(torneo, req.usuario.rol)
+
+    // Para el jugador se agrega su inscripción activa (como titular o compañero), así la ficha
+    // muestra «Ya estás inscripto» en lugar del botón (M3-FE-04). Una con el plazo de pago vencido
+    // no cuenta: se anula al próximo intento de inscripción.
+    if (req.usuario.rol === 'JUGADOR') {
+      const inscripcion = req.usuario.jugador_id ? await buscarInscripcionActivaDeJugador(id, req.usuario.jugador_id) : null
+      const vencida = inscripcion?.estadoPago === 'PENDIENTE' && inscripcion.venceEn && new Date(inscripcion.venceEn) < new Date()
+      respuesta.miInscripcion = inscripcion && !vencida ? { ...inscripcion, esTitular: inscripcion.titularJugadorId === req.usuario.jugador_id } : null
+      if (respuesta.miInscripcion) respuesta.accionesPermitidas = respuesta.accionesPermitidas.filter((a) => a !== 'INSCRIBIRSE')
+    }
+
+    return res.status(200).json({ torneo: respuesta })
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo obtener el torneo' })
