@@ -13,6 +13,7 @@ import rutasContactoUsuarios from './modulos/usuarios/rutas.contacto.usuarios.js
 import rutasActividad from './modulos/perfil/rutas.actividad.js'
 import rutasTorneos from './modulos/torneos/rutas.torneos.js'
 import rutasCategorias from './modulos/torneos/rutas.categorias.js'
+import rutasJugadores from './modulos/jugadores/rutas.jugadores.js'
 
 const app = express()
 
@@ -40,14 +41,15 @@ app.get('/health', async (req, res) => {
 app.use('/api/ejemplo', rutasEjemplo)
 app.use('/api/auth', rutasAutenticacion)
 app.use('/api/perfil/password', rutasPassword)
+app.use('/api/perfil/actividad', rutasActividad)
 app.use('/api/perfil', rutasPerfil)
 app.use('/api/usuarios', rutasUsuarios)
 app.use('/api/usuarios', rutasConsultaUsuarios)
 app.use('/api/usuarios', rutasRolUsuarios)
 app.use('/api/usuarios', rutasEstadoUsuarios)
 app.use('/api/usuarios', rutasContactoUsuarios)
-app.use('/api/perfil/actividad', rutasActividad)
 app.use('/api/torneos', rutasTorneos)
+app.use('/api/jugadores', rutasJugadores)
 app.use('/api/categorias', rutasCategorias)
 
 // Ruta no encontrada
