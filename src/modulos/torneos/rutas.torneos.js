@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { autenticar, autorizar } from '../../middlewares/autenticacion.middleware.js'
 import { crear, editar, listar, obtener } from './controlador.torneos.js'
 import { abrir, cancelar, cerrar, previewCierre } from './controlador.estados.torneos.js'
+import { inscribir } from './controlador.inscripciones.js'
 
 const router = Router()
 
@@ -18,5 +19,8 @@ router.post('/:id/abrir-inscripciones', autorizar('ORGANIZADOR'), abrir)
 router.get('/:id/cerrar-inscripciones/preview', autorizar('ORGANIZADOR'), previewCierre)
 router.post('/:id/cerrar-inscripciones', autorizar('ORGANIZADOR'), cerrar)
 router.post('/:id/cancelar', autorizar('ORGANIZADOR'), cancelar)
+
+// Inscripción. Solo JUGADOR: el Administrador no hereda este permiso.
+router.post('/:id/inscripciones', autorizar('JUGADOR'), inscribir)
 
 export default router
