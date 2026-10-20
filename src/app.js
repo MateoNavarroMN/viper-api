@@ -15,6 +15,7 @@ import rutasTorneos from './modulos/torneos/rutas.torneos.js'
 import rutasCategorias from './modulos/torneos/rutas.categorias.js'
 import rutasJugadores from './modulos/jugadores/rutas.jugadores.js'
 import rutasMisInscripciones from './modulos/torneos/rutas.mis.inscripciones.js'
+import rutasInscripciones from './modulos/torneos/rutas.inscripciones.js'
 
 const app = express()
 
@@ -51,6 +52,7 @@ app.use('/api/usuarios', rutasEstadoUsuarios)
 app.use('/api/usuarios', rutasContactoUsuarios)
 app.use('/api/torneos', rutasTorneos)
 app.use('/api/mis-inscripciones', rutasMisInscripciones)
+app.use('/api/inscripciones', rutasInscripciones)
 app.use('/api/jugadores', rutasJugadores)
 app.use('/api/categorias', rutasCategorias)
 
