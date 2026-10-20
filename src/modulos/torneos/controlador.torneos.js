@@ -1,6 +1,6 @@
 import { buscarCategoriaPorId } from './modelo.categorias.js'
 import { buscarTorneoPorId, crearTorneo, editarTorneoPlanificado, listarTorneos } from './modelo.torneos.js'
-import { buscarInscripcionActivaDeJugador } from './modelo.inscripciones.js'
+import { anularInscripcionesVencidas, buscarInscripcionActivaDeJugador } from './modelo.inscripciones.js'
 import { VISTAS, accionesPermitidas, estadosVisibles } from './acciones.torneos.js'
 
 const DISCIPLINAS = ['TENIS', 'PADEL']
@@ -81,6 +81,7 @@ export const listar = async (req, res) => {
   const estados = visibles.filter((e) => (!vista || VISTAS[vista].includes(e)) && (!estado || e === estado))
 
   try {
+    await anularInscripcionesVencidas(id)
     const torneos = estados.length > 0 ? await listarTorneos({ estados, disciplina: disciplina ?? null }) : []
     return res.status(200).json({ torneos: torneos.map((t) => conAcciones(t, req.usuario.rol)) })
   } catch (error) {
@@ -95,6 +96,7 @@ export const obtener = async (req, res) => {
   if (!REGEX_UUID.test(id)) return res.status(404).json({ mensaje: 'Torneo no encontrado' })
 
   try {
+    await anularInscripcionesVencidas(id)
     const torneo = await buscarTorneoPorId(id)
     // Un torneo que el rol no puede ver responde igual que uno que no existe
     if (!torneo || !estadosVisibles(req.usuario.rol).includes(torneo.estado)) {
