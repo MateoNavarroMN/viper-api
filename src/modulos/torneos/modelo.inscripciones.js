@@ -43,6 +43,18 @@ export const listarInscripcionesDeTorneo = async (torneoId, { soloActivas = fals
   return rows
 }
 
+// Listado de gestión (M3-BE-06): igual que el anterior pero con el DNI de cada integrante, para que
+// recepción identifique a quien viene a pagar, y filtrable por estado ('ACTIVA' | 'ANULADA' | null = todas).
+export const listarInscripcionesParaGestion = async (torneoId, estado = null, db = pool) => {
+  const { rows } = await db.query(
+    `${SELECT_INSCRIPCION.replace('select i.id,', 'select jt.dni as "titularDni", jc.dni as "companeroDni", i.id,')}
+      where i.torneo_id = $1 and ($2::estado_inscripcion is null or i.estado = $2::estado_inscripcion)
+      order by i.fecha_inscripcion, ut.apellido, ut.nombre, i.id`,
+    [torneoId, estado]
+  )
+  return rows
+}
+
 export const contarInscripcionesActivas = async (torneoId, db = pool) => {
   const { rows } = await db.query(
     "select count(*)::int as total from inscripcion where torneo_id = $1 and estado = 'ACTIVA'",
@@ -71,16 +83,20 @@ export const anularInscripcion = async (id, db = pool) => {
   return rowCount > 0
 }
 
-// Anula las inscripciones del torneo con pago PENDIENTE y plazo vencido (CU 3.2 · 7a). Devuelve cuántas.
-export const anularInscripcionesVencidas = async (torneoId, db = pool) => {
+// Anula las inscripciones con pago PENDIENTE y plazo vencido (CU 3.2 · 7a): liberan el cupo. Devuelve cuántas.
+// Con `torneoId` solo las de ese torneo; sin él, las de todos (para los listados de torneos).
+// Es el enfoque "perezoso" del plan (sin cron, porque Render puede dormir la instancia): se llama antes de
+// calcular el cupo, listar, inscribir, cerrar inscripciones y generar el cuadro.
+export const anularInscripcionesVencidas = async (torneoId = null, db = pool) => {
   const { rowCount } = await db.query(
     `update inscripcion set estado = 'ANULADA'
-      where torneo_id = $1 and estado = 'ACTIVA' and estado_pago = 'PENDIENTE'
+      where ($1::uuid is null or torneo_id = $1) and estado = 'ACTIVA' and estado_pago = 'PENDIENTE'
         and vence_en is not null and vence_en < now()`,
     [torneoId]
   )
   return rowCount
 }
+
 
 // Marca el pago (CU 3.2 · 7a, M3-BE-07): guarda la fecha y quién lo registró.
 // Devuelve false si la inscripción no está ACTIVA con el pago PENDIENTE.

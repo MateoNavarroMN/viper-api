@@ -1,5 +1,8 @@
 import { accionesPermitidas } from './acciones.torneos.js'
 import { inscribirEnTorneo } from './modelo.inscribir.torneos.js'
+import { anularInscripcionesVencidas, listarInscripcionesParaGestion } from './modelo.inscripciones.js'
+import { buscarTorneoPorId } from './modelo.torneos.js'
+import { listarInscripcionesDeJugador } from '../perfil/modelo.actividad.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MEDIOS_DE_PAGO = ['EN_LINEA', 'RECEPCION']
@@ -77,5 +80,63 @@ export const inscribir = async (req, res) => {
     if (error.code === '23505') return res.status(409).json({ mensaje: YA_INSCRIPTO.JUGADOR, quien: 'JUGADOR' })
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo registrar la inscripción' })
+  }
+}
+
+const ESTADOS_INSCRIPCION = ['ACTIVA', 'ANULADA']
+
+// Persona de una inscripción para el listado de gestión (con DNI, para identificarla en recepción)
+const persona = (id, nombre, apellido, dni) => (id ? { id, nombre, apellido, dni } : null)
+
+// GET /api/torneos/:id/inscripciones?estado=ACTIVA|ANULADA  (CU 3.2 · 7a, Organizador, Recepcionista y Administrador)
+// Antes de listar se anulan las pendientes vencidas, así el cupo y el estado salen al día.
+export const listarDelTorneo = async (req, res) => {
+  const { id } = req.params
+  const { estado } = req.query
+  if (!REGEX_UUID.test(id)) return noEncontrado(res)
+  if (estado !== undefined && !ESTADOS_INSCRIPCION.includes(estado)) {
+    return datoInvalido(res, 'Parámetro inválido: el estado no existe', 'estado')
+  }
+
+  try {
+    await anularInscripcionesVencidas(id)
+    const torneo = await buscarTorneoPorId(id)
+    // Un torneo PLANIFICADO todavía no tiene inscripciones: responde igual que uno que no existe
+    if (!torneo || torneo.estado === 'PLANIFICADO') return noEncontrado(res)
+
+    const filas = await listarInscripcionesParaGestion(id, estado ?? null)
+    const inscripciones = filas.map((f) => ({
+      id: f.id,
+      estado: f.estado,
+      estadoPago: f.estadoPago,
+      fechaInscripcion: f.fechaInscripcion,
+      venceEn: f.venceEn,
+      fechaPago: f.fechaPago,
+      cabezaDeSerie: f.cabezaDeSerie,
+      titular: persona(f.titularJugadorId, f.titularNombre, f.titularApellido, f.titularDni),
+      companero: persona(f.companeroJugadorId, f.companeroNombre, f.companeroApellido, f.companeroDni),
+    }))
+    const { nombre, estado: estadoTorneo, cupoMaximo, inscriptos, cupoDisponible } = torneo
+    return res.status(200).json({
+      torneo: { id, nombre, estado: estadoTorneo, cupoMaximo, inscriptos, cupoDisponible },
+      inscripciones,
+    })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo obtener el listado de inscripciones' })
+  }
+}
+
+// GET /api/mis-inscripciones  (CU 3.2 · paso 10, solo JUGADOR)
+// Todas las del jugador, como titular o compañero, las más recientes primero. Incluye las ANULADAS.
+export const listarMias = async (req, res) => {
+  if (!req.usuario.jugador_id) return res.status(403).json({ mensaje: 'Tu cuenta no tiene perfil de jugador' })
+  try {
+    await anularInscripcionesVencidas()
+    const inscripciones = await listarInscripcionesDeJugador(req.usuario.jugador_id, null)
+    return res.status(200).json({ inscripciones })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudieron obtener tus inscripciones' })
   }
 }
