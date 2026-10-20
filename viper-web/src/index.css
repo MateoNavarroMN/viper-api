@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+/* Definimos nuestros nombres de colores personalizados en Tailwind */
+@theme {
+  --color-fondo: var(--bg-color);
+  --color-panel: var(--surface-color);
+  --color-viper: var(--primary-color);
+  --color-viper-hover: var(--primary-hover);
+  --color-texto: var(--text-main);
+  --color-texto-suave: var(--text-muted);
+
+  --color-error: var(--error-color);
+  --color-exito: var(--success-color);
+  --color-advertencia: var(--warning-color);
+  --color-info: var(--info-color);
+  --color-violeta: var(--violet-color);
+
+  /* Fuentes */
+  --font-sans: "Inter", sans-serif;
+  /* Fuente por defecto para todo el texto */
+  --font-outfit: "Outfit", sans-serif;
+  /* Fuente para los títulos */
+}
+
+/* Paleta del Modo Oscuro */
+:root {
+  --bg-color: #09090B;
+  /* Fondo súper oscuro */
+  --surface-color: #18181B;
+  /* Tarjetas y modales */
+  --primary-color: #10B981;
+  /* El Verde profesional */
+  --primary-hover: #059669;
+  /* Verde un poco más oscuro para cuando pasas el mouse */
+  --text-main: #F8FAFC;
+  /* Texto blanco roto */
+  --text-muted: #94A3B8;
+  /* Texto gris */
+
+  --error-color: #EF4444;
+  /* Errores y acciones peligrosas */
+  --success-color: #10B981;
+  /* Confirmaciones y estados positivos (mismo verde de marca) */
+  --warning-color: #F59E0B;
+  /* Avisos y estados que requieren atención */
+  --info-color: #3B82F6;
+  /* Mensajes informativos, estado "En curso" */
+  --violet-color: #8B5CF6;
+  /* Estado "Finalizado", rol Organizador */
+}
+
+/* Paleta del Modo Claro (Para el futuro) */
+.tema-claro {
+  --bg-color: #F3F4F6;
+  /* Fondo gris muy clarito */
+  --surface-color: #FFFFFF;
+  /* Tarjetas blancas puras */
+  --primary-color: #10B981;
+  /* El mismo verde resalta bien en blanco */
+  --primary-hover: #059669;
+  --text-main: #0F172A;
+  /* Texto casi negro */
+  --text-muted: #64748B;
+
+  --error-color: #DC2626;
+  --success-color: #059669;
+  --warning-color: #D97706;
+  --info-color: #2563EB;
+  --violet-color: #7C3AED;
+}
+
+/* Configuramos el fondo y color de texto base para toda la web */
+body {
+  background-color: var(--bg-color);
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+
+  /* Quita el parpadeo azul/gris nativo de Android/iOS al tocar elementos interactivos */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Evitamos que el usuario seleccione el texto de los botones o enlaces por accidente al deslizar */
+button,
+a {
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+  /* Elimina un pequeño retraso de 300ms al hacer tap en pantallas táctiles */
+}
