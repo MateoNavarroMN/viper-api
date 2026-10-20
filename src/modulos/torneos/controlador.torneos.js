@@ -81,7 +81,7 @@ export const listar = async (req, res) => {
   const estados = visibles.filter((e) => (!vista || VISTAS[vista].includes(e)) && (!estado || e === estado))
 
   try {
-    await anularInscripcionesVencidas(id)
+    await anularInscripcionesVencidas()
     const torneos = estados.length > 0 ? await listarTorneos({ estados, disciplina: disciplina ?? null }) : []
     return res.status(200).json({ torneos: torneos.map((t) => conAcciones(t, req.usuario.rol)) })
   } catch (error) {
