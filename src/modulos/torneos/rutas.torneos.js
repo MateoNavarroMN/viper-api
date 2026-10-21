@@ -3,6 +3,7 @@ import { autenticar, autorizar } from '../../middlewares/autenticacion.middlewar
 import { crear, editar, listar, obtener } from './controlador.torneos.js'
 import { abrir, cancelar, cerrar, previewCierre } from './controlador.estados.torneos.js'
 import { inscribir, listarDelTorneo } from './controlador.inscripciones.js'
+import { guardar as guardarCabezas, obtener as obtenerCabezas } from './controlador.cabezas.torneos.js'
 
 const router = Router()
 
@@ -20,6 +21,10 @@ router.get('/:id/cerrar-inscripciones/preview', autorizar('ORGANIZADOR'), previe
 router.post('/:id/cerrar-inscripciones', autorizar('ORGANIZADOR'), cerrar)
 router.get('/:id/inscripciones', autorizar('RECEPCIONISTA', 'ORGANIZADOR'), listarDelTorneo)
 router.post('/:id/cancelar', autorizar('ORGANIZADOR'), cancelar)
+
+// Cabezas de serie (CU 3.3)
+router.get('/:id/cabezas-de-serie', autorizar('ORGANIZADOR'), obtenerCabezas)
+router.put('/:id/cabezas-de-serie', autorizar('ORGANIZADOR'), guardarCabezas)
 
 // Inscripción. Solo JUGADOR: el Administrador no hereda este permiso.
 router.post('/:id/inscripciones', autorizar('JUGADOR'), inscribir)
