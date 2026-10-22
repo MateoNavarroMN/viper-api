@@ -51,8 +51,9 @@ export const listarCanchas = async (disciplina, db = pool) => {
   return rows
 }
 
-// true si la cancha existe, está activa y no tiene ninguna reserva vigente que pise la franja
-export const verificarDisponibilidad = async (canchaId, fecha, horaInicio, horaFin, db = pool) => {
+// true si la cancha existe, está activa y no tiene ninguna reserva vigente que pise la franja.
+// `ignorarReservaId` sirve al reprogramar: la reserva actual del partido no cuenta como ocupación.
+export const verificarDisponibilidad = async (canchaId, fecha, horaInicio, horaFin, db = pool, ignorarReservaId = null) => {
   const { rows } = await db.query(
     `select
         exists (select 1 from cancha where id = $1 and activa)
@@ -60,33 +61,39 @@ export const verificarDisponibilidad = async (canchaId, fecha, horaInicio, horaF
           select 1 from reserva
            where cancha_id = $1
              and estado in ('PENDIENTE', 'CONFIRMADA')
+             and id is distinct from $5
              and tsrange(fecha + hora_inicio, fecha + hora_fin) && tsrange($2::date + $3::time, $2::date + $4::time)
         ) as disponible`,
-    [canchaId, fecha, horaInicio, horaFin],
+    [canchaId, fecha, horaInicio, horaFin, ignorarReservaId],
   )
   return rows[0].disponible
 }
 
 // Reservas vigentes de las canchas dadas dentro de un período: es la lista `ocupadas` que recibe el scheduler
-export const listarOcupadas = async (canchaIds, desde, hasta, db = pool) => {
+export const listarOcupadas = async (canchaIds, desde, hasta, db = pool, ignorarReservaId = null) => {
   const { rows } = await db.query(
     `select cancha_id as "canchaId", to_char(fecha, 'YYYY-MM-DD') as fecha,
             to_char(hora_inicio, 'HH24:MI') as "horaInicio", to_char(hora_fin, 'HH24:MI') as "horaFin"
        from reserva
-      where cancha_id = any($1) and estado in ('PENDIENTE', 'CONFIRMADA') and fecha between $2 and $3`,
-    [canchaIds, desde, hasta],
+      where cancha_id = any($1) and estado in ('PENDIENTE', 'CONFIRMADA') and fecha between $2 and $3
+        and id is distinct from $4`,
+    [canchaIds, desde, hasta, ignorarReservaId],
   )
   return rows
 }
 
-// Cancela una reserva vigente y desvincula el partido. Devuelve false si no existía o ya estaba cancelada.
+// Cancela una reserva vigente y desvincula el partido (que vuelve a PENDIENTE si estaba PROGRAMADO). Devuelve false si no existía o ya estaba cancelada.
 export const cancelarReserva = async (reservaId, db = pool) => {
   const { rowCount } = await db.query(
     `update reserva set estado = 'CANCELADA'
       where id = $1 and estado in ('PENDIENTE', 'CONFIRMADA')`,
     [reservaId],
   )
-  await db.query('update partido set reserva_id = null where reserva_id = $1', [reservaId])
+  await db.query(
+    `update partido set reserva_id = null, estado = case when estado = 'PROGRAMADO' then 'PENDIENTE' else estado end
+      where reserva_id = $1`,
+    [reservaId],
+  )
   return rowCount > 0
 }
 
@@ -99,11 +106,15 @@ export const cancelarReservasDelTorneo = async (torneoId, db = pool) => {
       returning id`,
     [torneoId],
   )
-  await db.query('update partido set reserva_id = null where torneo_id = $1', [torneoId])
+  await db.query(
+    `update partido set reserva_id = null, estado = case when estado = 'PROGRAMADO' then 'PENDIENTE' else estado end
+      where torneo_id = $1`,
+    [torneoId],
+  )
   return rows.length
 }
 
-// Bloquea la cancha para un partido con una reserva TORNEO confirmada y la vincula al partido. Si el partido ya
+// Bloquea la cancha para un partido con una reserva TORNEO confirmada y la vincula al partido (pasa a PROGRAMADO). Si el partido ya
 // tenía una reserva, la cancela antes (reprogramar), todo en la misma transacción: si la nueva franja está
 // ocupada, la anterior queda como estaba.
 // Devuelve { resultado: 'OK', reserva } | 'FRANJA_OCUPADA' | 'CANCHA_INVALIDA' | 'PARTIDO_NO_ENCONTRADO'.
@@ -132,7 +143,11 @@ export const reservarParaPartido = (partidoId, { canchaId, fecha, horaInicio, ho
                    to_char(hora_inicio, 'HH24:MI') as "horaInicio", to_char(hora_fin, 'HH24:MI') as "horaFin"`,
         [canchaId, fecha, horaInicio, horaFin],
       )
-      await tx.query('update partido set reserva_id = $2 where id = $1', [partidoId, creadas[0].id])
+      await tx.query(
+        `update partido set reserva_id = $2, estado = case when estado = 'PENDIENTE' then 'PROGRAMADO' else estado end
+          where id = $1`,
+        [partidoId, creadas[0].id],
+      )
       return { resultado: 'OK', reserva: creadas[0] }
     } catch (error) {
       if (error.code !== SOLAPAMIENTO) throw error
