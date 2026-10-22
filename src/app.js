@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import { pool } from './config/conexion.bd.js'
-import rutasEjemplo from './modulos/ejemplo/rutas.ejemplo.js'
+
 import rutasAutenticacion from './modulos/autenticacion/rutas.autenticacion.js'
 import rutasPerfil from './modulos/perfil/rutas.perfil.js'
 import rutasUsuarios from './modulos/usuarios/rutas.usuarios.js'
@@ -16,6 +16,8 @@ import rutasCategorias from './modulos/torneos/rutas.categorias.js'
 import rutasJugadores from './modulos/jugadores/rutas.jugadores.js'
 import rutasMisInscripciones from './modulos/torneos/rutas.mis.inscripciones.js'
 import rutasInscripciones from './modulos/torneos/rutas.inscripciones.js'
+import rutasCanchas from './modulos/canchas/rutas.canchas.js'
+import rutasPartidos from './modulos/partidos/rutas.partidos.js'
 
 const app = express()
 
@@ -40,7 +42,6 @@ app.get('/health', async (req, res) => {
 })
 
 // Rutas de los módulos
-app.use('/api/ejemplo', rutasEjemplo)
 app.use('/api/auth', rutasAutenticacion)
 app.use('/api/perfil/password', rutasPassword)
 app.use('/api/perfil/actividad', rutasActividad)
@@ -55,6 +56,8 @@ app.use('/api/mis-inscripciones', rutasMisInscripciones)
 app.use('/api/inscripciones', rutasInscripciones)
 app.use('/api/jugadores', rutasJugadores)
 app.use('/api/categorias', rutasCategorias)
+app.use('/api/canchas', rutasCanchas)
+app.use('/api/partidos', rutasPartidos)
 
 // Ruta no encontrada
 app.use((req, res) => {

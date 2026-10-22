@@ -1,3 +1,6 @@
+// Scheduler de partidos: asignación voraz de cancha y horario.
+// Función pura: no toca la base; recibe todo por parámetro y devuelve la propuesta.
+
 export const DURACION_MIN = 90
 export const DESCANSO_MIN = 60
 export const HORARIO = { desde: '08:00', hasta: '23:00' }
@@ -34,6 +37,7 @@ const solapan = (iniA, finA, iniB, finB) => iniA < finB && iniB < finA
  *   - los byes no se programan: filtralos antes de llamar.
  * canchas: [{ id }] ya filtradas por disciplina.
  * ocupadas: [{ canchaId, fecha, horaInicio, horaFin }] (alquileres, otros partidos).
+ * agendaPrevia: { [participanteId]: [{ fecha, horaInicio, horaFin }] } partidos que esos participantes ya tienen.
  * desde, hasta: 'YYYY-MM-DD', inclusivos.
  * Devuelve { asignados: [{ partidoId, canchaId, fecha, horaInicio, horaFin }],
  *            sinAsignar: [{ partidoId, motivo }] }.
@@ -42,6 +46,7 @@ export function programar(partidos, opciones) {
   const {
     canchas,
     ocupadas = [],
+    agendaPrevia = {},
     desde,
     hasta,
     horario = HORARIO,
@@ -65,6 +70,9 @@ export function programar(partidos, opciones) {
   }
 
   const agendaJugador = new Map()
+  for (const [participante, partidosPrevios] of Object.entries(agendaPrevia)) {
+    agendaJugador.set(participante, partidosPrevios.map((o) => [instante(o.fecha, o.horaInicio), instante(o.fecha, o.horaFin)]))
+  }
   const finDePartido = new Map()
   const asignados = []
   const sinAsignar = []
@@ -80,7 +88,7 @@ export function programar(partidos, opciones) {
       continue
     }
     const noAntesDe = Math.max(
-      -Infinity,
+      partido.noAntesDe ? instante(partido.noAntesDe.fecha, partido.noAntesDe.hora) : -Infinity,
       ...dependencias.map((id) => finDePartido.get(id) + descansoMin),
     )
 
