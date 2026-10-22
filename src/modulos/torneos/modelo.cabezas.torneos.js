@@ -26,7 +26,7 @@ export const limitesCabezasDeSerie = (formato, pagadas) => {
 }
 
 // Inscripciones ACTIVAS y PAGADAS del torneo, de más a menos puntos (CU 3.3 · paso 2).
-const listarPagadas = async (torneoId, db) => {
+export const listarPagadas = async (torneoId, db) => {
   const { rows } = await db.query(
     `select i.id, i.cabeza_de_serie as "cabezaDeSerie",
             coalesce(rt.puntos_totales, 0) + coalesce(rc.puntos_totales, 0) as puntos,

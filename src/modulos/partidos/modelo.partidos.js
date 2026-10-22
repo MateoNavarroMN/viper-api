@@ -30,7 +30,7 @@ const buscarPartido = async (partidoId, db) => {
 }
 
 // Partidos programados de esos jugadores en otros partidos (de cualquier torneo), desde `desde` en adelante
-const agendaDeJugadores = async (jugadores, partidoId, desde, hasta, db) => {
+export const agendaDeJugadores = async (jugadores, partidoId, desde, hasta, db) => {
   if (jugadores.length === 0) return []
   const { rows } = await db.query(
     `select j.jugador_id as "jugadorId", to_char(r.fecha, 'YYYY-MM-DD') as fecha,
@@ -39,7 +39,7 @@ const agendaDeJugadores = async (jugadores, partidoId, desde, hasta, db) => {
        join reserva r on r.id = p.reserva_id and r.estado in ('PENDIENTE', 'CONFIRMADA')
        join inscripcion i on i.id in (p.local_inscripcion_id, p.visitante_inscripcion_id)
        cross join lateral (values (i.titular_jugador_id), (i.companero_jugador_id)) j(jugador_id)
-      where p.id <> $2 and p.estado in ('PENDIENTE', 'PROGRAMADO')
+      where p.id is distinct from $2 and p.estado in ('PENDIENTE', 'PROGRAMADO')
         and j.jugador_id = any($1) and r.fecha between $3 and $4`,
     [jugadores, partidoId, desde, hasta],
   )
