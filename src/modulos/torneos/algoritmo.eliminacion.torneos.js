@@ -10,7 +10,7 @@
 //       siguiente: { ronda, posicion, ranura: 'LOCAL' | 'VISITANTE' } | null   // adónde va el ganador
 //   }] }] }
 
-const INSTANCIAS = ['FINAL', 'SEMIFINAL', 'CUARTOS', 'OCTAVOS', 'DIECISEISAVOS']
+const INSTANCIAS = ['FINAL', 'SEMIFINAL', 'CUARTOS', 'OCTAVOS', 'DIECISEISAVOS', 'TREINTAIDOSAVOS', 'SESENTAYCUATROAVOS']
 
 // 5 → 8, 8 → 8, 13 → 16
 export const siguientePotenciaDe2 = (n) => {
@@ -31,7 +31,7 @@ export const posicionesEstandar = (tamano) => {
   return orden
 }
 
-// Nombre de la ronda según cuántas faltan para la final (la base solo tiene hasta DIECISEISAVOS, o sea 32 lugares)
+// Nombre de la ronda según cuántas faltan para la final (hasta SESENTAYCUATROAVOS: un cuadro de 128 lugares, el cupo máximo)
 const instanciaDe = (rondasTotales, ronda) => INSTANCIAS[rondasTotales - ronda] ?? null
 
 // Mezcla una copia del arreglo (Fisher-Yates). `aleatorio` devuelve un número en [0, 1) y se puede inyectar para probar.
@@ -92,9 +92,6 @@ export const encadenarRondas = (lugares) => {
 }
 
 // participantes: [{ id, cabezaDeSerie }] ya ordenados por ranking (como los entrega GET /torneos/:id/cabezas-de-serie).
-// Las cabezas de serie toman las semillas 1, 2, 3… en ese orden; el resto se sortea en los lugares que quedan.
-// Los byes (tamaño − participantes) los reciben primero las semillas más altas, o sea las cabezas de serie por orden,
-// y si sobran, quienes salieron sorteados con las semillas siguientes. Nunca hay un bye contra otro bye.
 export const generarEliminacion = (participantes, { aleatorio = Math.random } = {}) => {
   const n = participantes.length
   if (n < 2) throw new Error('Hacen falta al menos 2 participantes')
@@ -104,7 +101,6 @@ export const generarEliminacion = (participantes, { aleatorio = Math.random } = 
   const cabezas = participantes.filter((p) => p.cabezaDeSerie)
   const resto = mezclar(participantes.filter((p) => !p.cabezaDeSerie), aleatorio)
 
-  // Semilla 1..n → participante; las semillas n+1..tamano no existen: son los byes
   const porSemilla = [...cabezas, ...resto].map((p) => p.id)
   const lugares = posicionesEstandar(tamano).map((semilla) => porSemilla[semilla - 1] ?? null)
 

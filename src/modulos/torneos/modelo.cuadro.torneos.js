@@ -14,7 +14,7 @@ import { programar } from './scheduler.torneos.js'
 // Las funciones que escriben corren en una transacción con el torneo bloqueado: si algo falla no queda nada a medias.
 
 // La tabla `partido` solo tiene instancias hasta DIECISEISAVOS: un cuadro de eliminación directa llega a 32 lugares
-const MAXIMO_ELIMINACION = 32
+const MAXIMO_ELIMINACION = 128
 
 // Pagadas y pendientes de un torneo (las pendientes quedan fuera del cuadro)
 const contarPendientes = async (torneoId, db) => {
