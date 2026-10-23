@@ -109,3 +109,16 @@ export const confirmarPagoInscripcion = async (id, operadorUsuarioId, db = pool)
   )
   return rowCount > 0
 }
+
+// Jugadores de unas inscripciones: el titular y, en Pádel, el compañero. Sirve para repartir los puntos de ranking
+// (a los dos integrantes de la pareja) sin que el ranking conozca las inscripciones.
+export const jugadoresDeInscripciones = async (inscripcionIds, db = pool) => {
+  const { rows } = await db.query(
+    `select distinct j.jugador_id as "jugadorId"
+       from inscripcion i
+       cross join lateral (values (i.titular_jugador_id), (i.companero_jugador_id)) j(jugador_id)
+      where i.id = any($1) and j.jugador_id is not null`,
+    [inscripcionIds]
+  )
+  return rows.map((r) => r.jugadorId)
+}
