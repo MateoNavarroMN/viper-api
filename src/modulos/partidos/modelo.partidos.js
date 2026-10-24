@@ -46,7 +46,7 @@ export const agendaDeJugadores = async (jugadores, partidoId, desde, hasta, db) 
   return rows
 }
 
-// Primera franja libre desde `desde` (fecha y hora) que sirva para este partido, o null. Usa el scheduler (M3-BE-11)
+// Primera franja libre desde `desde` (fecha y hora) que sirva para este partido, o null. Usa el scheduler
 // con las reservas vigentes y los partidos de sus jugadores. Sólo evita superposiciones: sin descanso mínimo.
 const sugerirFranja = async (partido, { fecha, horaInicio }, db) => {
   const canchas = await listarCanchas(partido.disciplina, db)
@@ -135,6 +135,57 @@ export const programarPartido = async (partidoId, { canchaId, fecha, horaInicio 
         horaFin,
       },
     }
+  } catch (error) {
+    await cliente.query('rollback').catch(() => {})
+    throw error
+  } finally {
+    cliente.release()
+  }
+}
+
+// Amplía la fecha de fin de un torneo en curso y, con el período nuevo, intenta programar los partidos que habían
+// quedado sin cancha ni horario. Todo en una transacción. Devuelve { resultado, ... }:
+//   'NO_ENCONTRADO' · 'ESTADO_INVALIDO' (estado) · 'FECHA_NO_POSTERIOR' (fechaFinActual)
+//   'OK' (fechaFin, programados, sinProgramar: cuántos quedaron sin lugar)
+export const ampliarFechaFin = async (torneoId, fechaFin) => {
+  const cliente = await pool.connect()
+  try {
+    await cliente.query('begin')
+    const descartar = async (resultado) => {
+      await cliente.query('rollback')
+      return resultado
+    }
+
+    const { rows } = await cliente.query(
+      `select estado, to_char(fecha_fin, 'YYYY-MM-DD') as "fechaFin" from torneo where id = $1 for update`,
+      [torneoId],
+    )
+    if (!rows[0]) return await descartar({ resultado: 'NO_ENCONTRADO' })
+    if (rows[0].estado !== 'EN_CURSO') return await descartar({ resultado: 'ESTADO_INVALIDO', estado: rows[0].estado })
+    if (fechaFin <= rows[0].fechaFin) return await descartar({ resultado: 'FECHA_NO_POSTERIOR', fechaFinActual: rows[0].fechaFin })
+
+    await cliente.query('update torneo set fecha_fin = $2 where id = $1', [torneoId, fechaFin])
+
+    // Los que se juegan, tienen a los dos rivales y no tienen franja, en el orden del cuadro
+    const { rows: pendientes } = await cliente.query(
+      `select id from partido
+        where torneo_id = $1 and estado = 'PENDIENTE' and reserva_id is null and not es_bye
+          and local_inscripcion_id is not null and visitante_inscripcion_id is not null
+        order by ronda, posicion`,
+      [torneoId],
+    )
+
+    let programados = 0
+    for (const { id } of pendientes) {
+      const partido = await buscarPartido(id, cliente)
+      const franja = await sugerirFranja(partido, { fecha: partido.fechaInicio, horaInicio: HORARIO.desde }, cliente)
+      if (!franja) continue
+      const { resultado } = await reservarParaPartido(id, franja, cliente)
+      if (resultado === 'OK') programados += 1
+    }
+
+    await cliente.query('commit')
+    return { resultado: 'OK', fechaFin, programados, sinProgramar: pendientes.length - programados }
   } catch (error) {
     await cliente.query('rollback').catch(() => {})
     throw error

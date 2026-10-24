@@ -1,3 +1,4 @@
+import { ampliarFechaFin } from '../partidos/modelo.partidos.js'
 import { generarCuadro, obtenerCuadro, previewCuadro, regenerarCuadro } from './modelo.cuadro.torneos.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -79,3 +80,26 @@ export const regenerar = conTorneo(async (req, res) => {
   if (resultado === 'CON_RESULTADOS') return res.status(409).json({ mensaje: 'El cuadro ya tiene resultados' })
   return res.status(200).json({ mensaje: 'Cuadro eliminado: ya podés generarlo de nuevo', torneo: datos.torneo, reservasCanceladas: datos.reservasCanceladas })
 }, 'No se pudo regenerar el cuadro')
+
+// PUT /api/torneos/:id/fecha-fin  Cuerpo: { fechaFin: 'AAAA-MM-DD' }  (CU 3.4 · 5a)
+// Amplía el período de un torneo en curso y programa con él los partidos que habían quedado sin franja.
+export const ampliarFin = conTorneo(async (req, res) => {
+  const { fechaFin } = req.body ?? {}
+  const calendario = typeof fechaFin === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(fechaFin) ? new Date(`${fechaFin}T00:00:00Z`) : null
+  if (!calendario || Number.isNaN(calendario.getTime()) || calendario.toISOString().slice(0, 10) !== fechaFin) {
+    return res.status(400).json({ mensaje: 'Datos inválidos', campo: 'fechaFin' })
+  }
+
+  const { resultado, ...datos } = await ampliarFechaFin(req.params.id, fechaFin)
+  if (resultado === 'NO_ENCONTRADO') return noEncontrado(res)
+  if (resultado === 'ESTADO_INVALIDO') return res.status(409).json({ mensaje: 'El torneo no está en curso', estado: datos.estado })
+  if (resultado === 'FECHA_NO_POSTERIOR') {
+    return res.status(400).json({ mensaje: `La nueva fecha tiene que ser posterior al fin actual (${datos.fechaFinActual})`, campo: 'fechaFin' })
+  }
+  return res.status(200).json({
+    mensaje: datos.sinProgramar > 0 ? 'Fecha de fin ampliada: quedaron partidos sin programar' : 'Fecha de fin ampliada',
+    fechaFin: datos.fechaFin,
+    programados: datos.programados,
+    sinProgramar: datos.sinProgramar,
+  })
+}, 'No se pudo ampliar la fecha de fin')
