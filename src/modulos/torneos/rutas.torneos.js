@@ -4,7 +4,7 @@ import { crear, editar, listar, obtener } from './controlador.torneos.js'
 import { abrir, cancelar, cerrar, previewCierre } from './controlador.estados.torneos.js'
 import { inscribir, listarDelTorneo } from './controlador.inscripciones.js'
 import { guardar as guardarCabezas, obtener as obtenerCabezas } from './controlador.cabezas.torneos.js'
-import { cuadro, generar, preview as previewCuadro, regenerar } from './controlador.cuadro.torneos.js'
+import { ampliarFin, cuadro, generar, preview as previewCuadro, regenerar } from './controlador.cuadro.torneos.js'
 
 const router = Router()
 
@@ -32,6 +32,7 @@ router.get('/:id/generar-cuadro/preview', autorizar('ORGANIZADOR'), previewCuadr
 router.post('/:id/generar-cuadro', autorizar('ORGANIZADOR'), generar)
 router.get('/:id/cuadro', cuadro)
 router.post('/:id/regenerar-cuadro', autorizar('ORGANIZADOR'), regenerar)
+router.put('/:id/fecha-fin', autorizar('ORGANIZADOR'), ampliarFin)
 
 // Inscripción. Solo JUGADOR: el Administrador no hereda este permiso.
 router.post('/:id/inscripciones', autorizar('JUGADOR'), inscribir)
