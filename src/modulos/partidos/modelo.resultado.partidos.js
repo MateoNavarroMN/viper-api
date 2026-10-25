@@ -1,14 +1,15 @@
 import { pool } from '../../config/conexion.bd.js'
-import { otorgarPuntos } from '../ranking/modelo.ranking.js'
+import { otorgarPuntos, revertirMovimientos, revertirMovimientosPorInstancia } from '../ranking/modelo.ranking.js'
 import { listarCanchas, listarOcupadas, reservarParaPartido } from '../reservas/modelo.reservas.js'
 import { calcularPosiciones } from '../torneos/algoritmo.posiciones.torneos.js'
 import { programar } from '../torneos/scheduler.torneos.js'
+import { jugadoresDeInscripciones } from '../torneos/modelo.inscripciones.js'
 import { bloquearTorneo, cambiarEstadoTorneo } from '../torneos/modelo.torneos.js'
 import { agendaDeJugadores } from './modelo.partidos.js'
 
-// Registrar el resultado de un partido (CU 3.6 · pasos 5 a 9). Todo corre en una transacción con el torneo bloqueado:
-// los sets, el ganador, la tabla de la zona o el avance en el cuadro, los puntos y el cierre del torneo se guardan
-// juntos o no se guarda nada. Lo que no depende de la base (que el marcador sea válido) lo valida antes el controller.
+// Registrar (CU 3.6 · pasos 5 a 9) y corregir (flujo alternativo 6a) el resultado de un partido. Todo corre en una
+// transacción con el torneo bloqueado: los sets, el ganador, la tabla de la zona o el avance en el cuadro, los puntos
+// y el cierre del torneo se guardan juntos o no se guarda nada. Lo que no depende de la base (que el marcador sea válido) lo valida antes el controller.
 //
 // Puntos (reglas de `regla_puntuacion`, valores de ejemplo hasta confirmarlos con el club):
 //   - Zona: el ganador de cada partido recibe VICTORIA_EN_ZONA. Al cerrarse la zona, los que clasifican reciben
@@ -16,8 +17,8 @@ import { agendaDeJugadores } from './modelo.partidos.js'
 //   - Eliminatoria: el que pierde recibe los puntos de la instancia en la que quedó (CUARTOS, SEMIFINAL…); el que gana
 //     no suma todavía, porque va a recibir los de la instancia en la que quede. En la final, el que pierde recibe
 //     FINAL y el que gana, CAMPEON.
-// Todos los movimientos quedan atados al partido (`movimiento_puntos.partido_id`), así BE-19 puede revertirlos
-// cuando se corrija el resultado.
+// Todos los movimientos quedan atados al partido (`movimiento_puntos.partido_id`), así se pueden revertir cuando se
+// corrige el resultado (CU 3.6 · 6a).
 
 // Datos de las inscripciones que juegan: quiénes son (titular y compañero) para mostrarlos y darles los puntos
 const cargarParticipantes = async (inscripcionIds, db) => {
@@ -97,11 +98,29 @@ const actualizarTablaDeZona = async (zonaId, clasifican, db) => {
   return tabla
 }
 
-// POST resultado. `sets` ya es un marcador válido y `ganador` es 'LOCAL' o 'VISITANTE' (lo dijo validarMarcador).
-// Devuelve { resultado: 'NO_ENCONTRADO' | 'NO_ADMITE' | 'OK', ... }. Con 'OK': partido, puntosOtorgados, zona
-// (la tabla actualizada, solo en un partido de zona), todasLasZonasCerradas (null si el torneo no tiene zonas),
-// siguiente (adónde avanzó el ganador, en la eliminatoria) y torneoFinalizado.
-export const registrarResultado = async (partidoId, sets, ganador) => {
+// Carga el partido con su torneo y el estado del partido siguiente, bloqueando la fila del partido
+const cargarPartido = async (cliente, partidoId) => {
+  const { rows } = await cliente.query(
+    `select p.id, p.estado, p.fase, p.zona_id as "zonaId", p.instancia, p.es_bye as "esBye",
+            p.local_inscripcion_id as "localId", p.visitante_inscripcion_id as "visitanteId",
+            p.ganador_inscripcion_id as "ganadorId",
+            p.partido_siguiente_id as "siguienteId", p.ranura_en_siguiente as ranura, p.reserva_id as "reservaId",
+            s.estado as "estadoSiguiente",
+            t.id as "torneoId", t.disciplina, t.estado as "estadoTorneo", t.clasifican_por_zona as "clasificanPorZona",
+            to_char(t.fecha_inicio, 'YYYY-MM-DD') as "fechaInicio", to_char(t.fecha_fin, 'YYYY-MM-DD') as "fechaFin"
+       from partido p
+       join torneo t on t.id = p.torneo_id
+       left join partido s on s.id = p.partido_siguiente_id
+      where p.id = $1
+      for update of p`,
+    [partidoId]
+  )
+  return rows[0]
+}
+
+// Abre la transacción, bloquea el torneo (antes que el partido: dos resultados de una misma zona se calculan uno
+// detrás del otro) y corre `trabajo(cliente, partido)`. Si devuelve algo distinto de 'OK' deshace todo.
+const enTransaccion = async (partidoId, trabajo) => {
   const cliente = await pool.connect()
   try {
     await cliente.query('begin')
@@ -110,145 +129,14 @@ export const registrarResultado = async (partidoId, sets, ganador) => {
       return datos
     }
 
-    // Se bloquea el torneo antes que el partido: dos resultados de una misma zona se calculan uno detrás del otro
     const { rows: referencia } = await cliente.query('select torneo_id as "torneoId" from partido where id = $1', [partidoId])
     if (!referencia[0]) return await terminar({ resultado: 'NO_ENCONTRADO' })
     await bloquearTorneo(referencia[0].torneoId, cliente)
 
-    const { rows } = await cliente.query(
-      `select p.id, p.estado, p.fase, p.zona_id as "zonaId", p.instancia, p.es_bye as "esBye",
-              p.local_inscripcion_id as "localId", p.visitante_inscripcion_id as "visitanteId",
-              p.partido_siguiente_id as "siguienteId", p.ranura_en_siguiente as ranura, p.reserva_id as "reservaId",
-              t.id as "torneoId", t.disciplina, t.estado as "estadoTorneo", t.clasifican_por_zona as "clasificanPorZona",
-              to_char(t.fecha_inicio, 'YYYY-MM-DD') as "fechaInicio", to_char(t.fecha_fin, 'YYYY-MM-DD') as "fechaFin"
-         from partido p join torneo t on t.id = p.torneo_id
-        where p.id = $1
-        for update of p`,
-      [partidoId]
-    )
-    const partido = rows[0]
-    if (partido.estadoTorneo !== 'EN_CURSO' || partido.esBye || partido.estado !== 'PROGRAMADO' || !partido.localId || !partido.visitanteId) {
-      return await terminar({ resultado: 'NO_ADMITE' })
-    }
-
-    const ganadorId = ganador === 'LOCAL' ? partido.localId : partido.visitanteId
-    const perdedorId = ganador === 'LOCAL' ? partido.visitanteId : partido.localId
-
-    // Sets y ganador
-    await cliente.query('delete from set_partido where partido_id = $1', [partidoId])
-    await cliente.query(
-      `insert into set_partido (partido_id, numero, games_local, games_visitante)
-       select $1, x.numero, x.local, x.visitante from jsonb_to_recordset($2::jsonb) as x(numero int, local int, visitante int)`,
-      [partidoId, JSON.stringify(sets.map((s, i) => ({ numero: i + 1, local: s.local, visitante: s.visitante })))]
-    )
-    await cliente.query("update partido set estado = 'FINALIZADO', ganador_inscripcion_id = $2 where id = $1", [partidoId, ganadorId])
-
-    const participantes = await cargarParticipantes([partido.localId, partido.visitanteId], cliente)
-    const puntosOtorgados = []
-    const dar = async (instancia, inscripcionIds) => {
-      const jugadorIds = inscripcionIds.flatMap((id) => jugadoresDe(participantes.get(id)))
-      const otorgados = await otorgarPuntos({ partidoId, disciplina: partido.disciplina, instancia, jugadorIds }, cliente)
-      puntosOtorgados.push(...otorgados.map((o) => ({ ...o, instancia })))
-    }
-
-    let zona = null
-    let siguiente = null
-    let torneoFinalizado = false
-
-    if (partido.fase === 'ZONA') {
-      await dar('VICTORIA_EN_ZONA', [ganadorId])
-
-      const tabla = await actualizarTablaDeZona(partido.zonaId, partido.clasificanPorZona ?? 2, cliente)
-      const deLaZona = await cargarParticipantes(tabla.posiciones.map((p) => p.inscripcionId), cliente)
-      for (const [id, participante] of deLaZona) participantes.set(id, participante)
-
-      // La zona se cierra cuando terminaron todos sus partidos y no queda un empate por resolver a mano
-      const cerrada = tabla.completa && !tabla.empateSinResolver
-      if (cerrada) {
-        await cliente.query('update zona set cerrada = true where id = $1', [partido.zonaId])
-        await dar('CLASIFICADO_DE_ZONA', tabla.posiciones.filter((p) => p.clasificado).map((p) => p.inscripcionId))
-        await dar('PARTICIPACION', tabla.posiciones.filter((p) => !p.clasificado).map((p) => p.inscripcionId))
-      }
-
-      const { rows: nombre } = await cliente.query('select nombre from zona where id = $1', [partido.zonaId])
-      zona = {
-        id: partido.zonaId,
-        nombre: nombre[0].nombre,
-        cerrada,
-        completa: tabla.completa,
-        empateSinResolver: tabla.empateSinResolver,
-        empates: tabla.empates,
-        posiciones: tabla.posiciones.map(({ inscripcionId, ...datos }) => ({ ...datos, participante: deLaZona.get(inscripcionId) })),
-      }
-    } else {
-      const esFinal = partido.instancia === 'FINAL'
-      await dar(partido.instancia, [perdedorId])
-      if (esFinal) await dar('CAMPEON', [ganadorId])
-
-      if (partido.siguienteId) {
-        const columna = partido.ranura === 'LOCAL' ? 'local_inscripcion_id' : 'visitante_inscripcion_id'
-        const { rows: proximo } = await cliente.query(
-          `update partido set ${columna} = $2 where id = $1
-           returning id, instancia, local_inscripcion_id as "localId", visitante_inscripcion_id as "visitanteId", reserva_id as "reservaId"`,
-          [partido.siguienteId, ganadorId]
-        )
-        const s = proximo[0]
-        siguiente = { partidoId: s.id, instancia: s.instancia, ranura: partido.ranura, rivalesDefinidos: Boolean(s.localId && s.visitanteId), programacion: null }
-        if (siguiente.rivalesDefinidos && !s.reservaId) {
-          // Desde que terminó el partido que acaba de resolverse (su franja), o desde el inicio del torneo si no tenía
-          const { rows: franja } = await cliente.query(
-            `select to_char(fecha, 'YYYY-MM-DD') as fecha, to_char(hora_fin, 'HH24:MI') as hora from reserva where id = $1`,
-            [partido.reservaId]
-          )
-          const desdeFranja = franja[0] ?? { fecha: partido.fechaInicio, hora: '08:00' }
-          const rivales = await cargarParticipantes([s.localId, s.visitanteId], cliente)
-          const jugadores = [...rivales.values()].flatMap(jugadoresDe)
-          siguiente.programacion = await programarSiguiente(s, desdeFranja, partido, jugadores, cliente)
-        }
-      }
-
-      if (esFinal && !partido.siguienteId) {
-        await cambiarEstadoTorneo(partido.torneoId, 'FINALIZADO', undefined, cliente)
-        torneoFinalizado = true
-      }
-    }
-
-    const { rows: estadoZonas } = await cliente.query(
-      'select count(*)::int as total, count(*) filter (where cerrada)::int as cerradas from zona where torneo_id = $1',
-      [partido.torneoId]
-    )
-    const todasLasZonasCerradas = estadoZonas[0].total === 0 ? null : estadoZonas[0].total === estadoZonas[0].cerradas
-
-    // Los nombres de quienes recibieron puntos, para mostrarlos en el resumen
-    const idsConPuntos = [...new Set(puntosOtorgados.map((p) => p.jugadorId))]
-    const { rows: nombres } = idsConPuntos.length === 0 ? { rows: [] } : await cliente.query(
-      `select j.id, u.nombre, u.apellido from jugador j join usuario u on u.id = j.usuario_id where j.id = any($1)`,
-      [idsConPuntos]
-    )
-    const personas = new Map(nombres.map((n) => [n.id, n]))
-
+    const datos = await trabajo(cliente, await cargarPartido(cliente, partidoId))
+    if (datos.resultado !== 'OK') return await terminar(datos)
     await cliente.query('commit')
-    return {
-      resultado: 'OK',
-      partido: {
-        id: partidoId,
-        estado: 'FINALIZADO',
-        ganadorInscripcionId: ganadorId,
-        ganador,
-        sets,
-      },
-      puntosOtorgados: puntosOtorgados.map((p) => ({
-        jugador: { id: p.jugadorId, nombre: personas.get(p.jugadorId).nombre, apellido: personas.get(p.jugadorId).apellido },
-        instancia: p.instancia,
-        puntos: p.puntos,
-        puntosTotales: p.puntosTotales,
-        cambioCategoria: p.cambioCategoria,
-      })),
-      zona,
-      todasLasZonasCerradas,
-      siguiente,
-      torneoFinalizado,
-    }
+    return datos
   } catch (error) {
     await cliente.query('rollback').catch(() => {})
     throw error
@@ -256,3 +144,232 @@ export const registrarResultado = async (partidoId, sets, ganador) => {
     cliente.release()
   }
 }
+
+// Guarda el resultado y todo lo que se desprende de él (sets, ganador, tabla de la zona o avance en el cuadro, puntos y
+// cierre del torneo). Sirve para cargarlo por primera vez y para corregirlo: en una corrección, antes se revirtió lo
+// que había, así que acá se calcula todo de nuevo como si fuera la primera vez. `sets` ya es un marcador válido y
+// `ganador` es 'LOCAL' o 'VISITANTE'. Devuelve el cuerpo de la respuesta (sin `resultado`).
+const aplicarResultado = async (cliente, partido, sets, ganador, { corrigiendo = false } = {}) => {
+  const partidoId = partido.id
+  const ganadorId = ganador === 'LOCAL' ? partido.localId : partido.visitanteId
+  const perdedorId = ganador === 'LOCAL' ? partido.visitanteId : partido.localId
+
+  // Sets y ganador
+  await cliente.query('delete from set_partido where partido_id = $1', [partidoId])
+  await cliente.query(
+    `insert into set_partido (partido_id, numero, games_local, games_visitante)
+     select $1, x.numero, x.local, x.visitante from jsonb_to_recordset($2::jsonb) as x(numero int, local int, visitante int)`,
+    [partidoId, JSON.stringify(sets.map((s, i) => ({ numero: i + 1, local: s.local, visitante: s.visitante })))]
+  )
+  await cliente.query("update partido set estado = 'FINALIZADO', ganador_inscripcion_id = $2 where id = $1", [partidoId, ganadorId])
+
+  const participantes = await cargarParticipantes([partido.localId, partido.visitanteId], cliente)
+  const puntosOtorgados = []
+  const dar = async (instancia, inscripcionIds) => {
+    const jugadorIds = inscripcionIds.flatMap((id) => jugadoresDe(participantes.get(id)))
+    const otorgados = await otorgarPuntos({ partidoId, disciplina: partido.disciplina, instancia, jugadorIds }, cliente)
+    puntosOtorgados.push(...otorgados.map((o) => ({ ...o, instancia })))
+  }
+
+  let zona = null
+  let siguiente = null
+  let torneoFinalizado = false
+
+  if (partido.fase === 'ZONA') {
+    await dar('VICTORIA_EN_ZONA', [ganadorId])
+
+    const tabla = await actualizarTablaDeZona(partido.zonaId, partido.clasificanPorZona ?? 2, cliente)
+    const deLaZona = await cargarParticipantes(tabla.posiciones.map((p) => p.inscripcionId), cliente)
+    for (const [id, participante] of deLaZona) participantes.set(id, participante)
+
+    // La zona se cierra cuando terminaron todos sus partidos y no queda un empate por resolver a mano
+    const cerrada = tabla.completa && !tabla.empateSinResolver
+    if (cerrada) {
+      await cliente.query('update zona set cerrada = true where id = $1', [partido.zonaId])
+      await dar('CLASIFICADO_DE_ZONA', tabla.posiciones.filter((p) => p.clasificado).map((p) => p.inscripcionId))
+      await dar('PARTICIPACION', tabla.posiciones.filter((p) => !p.clasificado).map((p) => p.inscripcionId))
+    }
+
+    const { rows: nombre } = await cliente.query('select nombre from zona where id = $1', [partido.zonaId])
+    zona = {
+      id: partido.zonaId,
+      nombre: nombre[0].nombre,
+      cerrada,
+      completa: tabla.completa,
+      empateSinResolver: tabla.empateSinResolver,
+      empates: tabla.empates,
+      posiciones: tabla.posiciones.map(({ inscripcionId, ...datos }) => ({ ...datos, participante: deLaZona.get(inscripcionId) })),
+    }
+  } else {
+    const esFinal = partido.instancia === 'FINAL'
+    await dar(partido.instancia, [perdedorId])
+    if (esFinal) await dar('CAMPEON', [ganadorId])
+
+    if (partido.siguienteId) {
+      // Si es una corrección y cambió el ganador, el nuevo ocupa el lugar del anterior (con la misma cancha y horario)
+      const columna = partido.ranura === 'LOCAL' ? 'local_inscripcion_id' : 'visitante_inscripcion_id'
+      const { rows: proximo } = await cliente.query(
+        `update partido set ${columna} = $2 where id = $1
+         returning id, instancia, local_inscripcion_id as "localId", visitante_inscripcion_id as "visitanteId", reserva_id as "reservaId"`,
+        [partido.siguienteId, ganadorId]
+      )
+      const s = proximo[0]
+      siguiente = { partidoId: s.id, instancia: s.instancia, ranura: partido.ranura, rivalesDefinidos: Boolean(s.localId && s.visitanteId), programacion: null }
+      if (siguiente.rivalesDefinidos && !s.reservaId) {
+        // Desde que terminó el partido que acaba de resolverse (su franja), o desde el inicio del torneo si no tenía
+        const { rows: franja } = await cliente.query(
+          `select to_char(fecha, 'YYYY-MM-DD') as fecha, to_char(hora_fin, 'HH24:MI') as hora from reserva where id = $1`,
+          [partido.reservaId]
+        )
+        const desdeFranja = franja[0] ?? { fecha: partido.fechaInicio, hora: '08:00' }
+        const rivales = await cargarParticipantes([s.localId, s.visitanteId], cliente)
+        const jugadores = [...rivales.values()].flatMap(jugadoresDe)
+        siguiente.programacion = await programarSiguiente(s, desdeFranja, partido, jugadores, cliente)
+      }
+    }
+
+    if (esFinal && !partido.siguienteId) {
+      // Al corregir la final el torneo ya estaba FINALIZADO y sigue así
+      if (!corrigiendo) await cambiarEstadoTorneo(partido.torneoId, 'FINALIZADO', undefined, cliente)
+      torneoFinalizado = true
+    }
+  }
+
+  const { rows: estadoZonas } = await cliente.query(
+    'select count(*)::int as total, count(*) filter (where cerrada)::int as cerradas from zona where torneo_id = $1',
+    [partido.torneoId]
+  )
+  const todasLasZonasCerradas = estadoZonas[0].total === 0 ? null : estadoZonas[0].total === estadoZonas[0].cerradas
+
+  // Los nombres de quienes recibieron puntos, para mostrarlos en el resumen
+  const idsConPuntos = [...new Set(puntosOtorgados.map((p) => p.jugadorId))]
+  const { rows: nombres } = idsConPuntos.length === 0 ? { rows: [] } : await cliente.query(
+    `select j.id, u.nombre, u.apellido from jugador j join usuario u on u.id = j.usuario_id where j.id = any($1)`,
+    [idsConPuntos]
+  )
+  const personas = new Map(nombres.map((n) => [n.id, n]))
+
+  return {
+    partido: {
+      id: partidoId,
+      estado: 'FINALIZADO',
+      ganadorInscripcionId: ganadorId,
+      ganador,
+      sets,
+    },
+    puntosOtorgados: puntosOtorgados.map((p) => ({
+      jugador: { id: p.jugadorId, nombre: personas.get(p.jugadorId).nombre, apellido: personas.get(p.jugadorId).apellido },
+      instancia: p.instancia,
+      puntos: p.puntos,
+      puntosTotales: p.puntosTotales,
+      cambioCategoria: p.cambioCategoria,
+    })),
+    zona,
+    todasLasZonasCerradas,
+    siguiente,
+    torneoFinalizado,
+  }
+}
+
+// POST resultado. `sets` ya es un marcador válido y `ganador` es 'LOCAL' o 'VISITANTE' (lo dijo validarMarcador).
+// Devuelve { resultado: 'NO_ENCONTRADO' | 'NO_ADMITE' | 'OK', ... }. Con 'OK': partido, puntosOtorgados, zona
+// (la tabla actualizada, solo en un partido de zona), todasLasZonasCerradas (null si el torneo no tiene zonas),
+// siguiente (adónde avanzó el ganador, en la eliminatoria) y torneoFinalizado.
+export const registrarResultado = (partidoId, sets, ganador) =>
+  enTransaccion(partidoId, async (cliente, partido) => {
+    if (partido.estadoTorneo !== 'EN_CURSO' || partido.esBye || partido.estado !== 'PROGRAMADO' || !partido.localId || !partido.visitanteId) {
+      return { resultado: 'NO_ADMITE' }
+    }
+    return { resultado: 'OK', ...(await aplicarResultado(cliente, partido, sets, ganador)) }
+  })
+
+// Por qué no se puede corregir el resultado de un partido (null si se puede). CU 3.6 · flujo alternativo 6a.
+const motivoDeRechazo = async (partido, cliente) => {
+  if (partido.esBye) return 'es un partido libre (bye)'
+  if (partido.estado === 'WO') return 'el partido terminó por W.O.'
+  if (partido.estado !== 'FINALIZADO') return 'el partido todavía no tiene resultado'
+
+  // Un torneo finalizado solo admite corregir la final: el campeón puede cambiar, pero el torneo sigue finalizado
+  const esFinal = partido.fase === 'ELIMINATORIA' && partido.instancia === 'FINAL' && !partido.siguienteId
+  if (partido.estadoTorneo === 'FINALIZADO' && !esFinal) return 'el torneo ya finalizó y solo se puede corregir la final'
+  if (partido.estadoTorneo !== 'EN_CURSO' && partido.estadoTorneo !== 'FINALIZADO') return 'el torneo no está en curso'
+
+  if (partido.fase === 'ZONA') {
+    const { rowCount } = await cliente.query("select 1 from partido where torneo_id = $1 and fase = 'ELIMINATORIA' limit 1", [partido.torneoId])
+    if (rowCount > 0) return 'ya se generó la fase eliminatoria'
+  } else if (partido.estadoSiguiente === 'FINALIZADO' || partido.estadoSiguiente === 'WO') {
+    return 'el ganador ya jugó su partido siguiente'
+  }
+  return null
+}
+
+// Categoría técnica de cada jugador en la disciplina (para avisar quién cambió de categoría con la corrección)
+const categoriasDe = async (jugadorIds, disciplina, cliente) => {
+  const { rows } = await cliente.query(
+    `select r.jugador_id as "jugadorId", c.id as "categoriaId", c.nombre_categoria as categoria, u.nombre, u.apellido
+       from ranking_disciplina r
+       join categoria_tecnica c on c.id = r.categoria_id
+       join jugador j on j.id = r.jugador_id
+       join usuario u on u.id = j.usuario_id
+      where r.disciplina = $1 and r.jugador_id = any($2)`,
+    [disciplina, jugadorIds]
+  )
+  return new Map(rows.map((r) => [r.jugadorId, r]))
+}
+
+// PUT resultado. Corrige el resultado de un partido ya jugado: revierte los puntos que dio, vuelve a calcular todo con
+// el marcador nuevo y, si cambió el ganador de un partido eliminatorio, lo reemplaza en el siguiente.
+// Devuelve { resultado: 'NO_ENCONTRADO' | 'NO_ADMITE' | 'OK', ... }. 'NO_ADMITE' trae `motivo`. Con 'OK' trae lo mismo
+// que registrarResultado más `cambioGanador`, `anterior` ({ ganadorInscripcionId, sets }) y `cambiosDeCategoria`.
+export const corregirResultado = (partidoId, sets, ganador) =>
+  enTransaccion(partidoId, async (cliente, partido) => {
+    const motivo = await motivoDeRechazo(partido, cliente)
+    if (motivo) return { resultado: 'NO_ADMITE', motivo }
+
+    const { rows: setsAnteriores } = await cliente.query(
+      'select games_local as local, games_visitante as visitante from set_partido where partido_id = $1 order by numero',
+      [partidoId]
+    )
+    const anterior = { ganadorInscripcionId: partido.ganadorId, sets: setsAnteriores }
+    const ganadorNuevoId = ganador === 'LOCAL' ? partido.localId : partido.visitanteId
+
+    // Jugadores que pueden cambiar de puntos: los dos rivales y, en una zona, todos los de la zona
+    let inscripcionIds = [partido.localId, partido.visitanteId]
+    if (partido.fase === 'ZONA') {
+      const { rows } = await cliente.query('select inscripcion_id as id from posicion_zona where zona_id = $1', [partido.zonaId])
+      inscripcionIds = rows.map((r) => r.id)
+    }
+    const jugadorIds = await jugadoresDeInscripciones(inscripcionIds, cliente)
+    const categoriasAntes = await categoriasDe(jugadorIds, partido.disciplina, cliente)
+
+    // Se deshace lo que dio el resultado anterior: los puntos de este partido y, en una zona, también los de clasificación,
+    // que se otorgaron con el último partido de la zona pero dependen de todos. Los movimientos quedan revertidos, no borrados.
+    await revertirMovimientos(partidoId, cliente)
+    if (partido.fase === 'ZONA') {
+      const { rows: deLaZona } = await cliente.query('select id from partido where zona_id = $1', [partido.zonaId])
+      await revertirMovimientosPorInstancia(deLaZona.map((p) => p.id), ['CLASIFICADO_DE_ZONA', 'PARTICIPACION'], cliente)
+      await cliente.query('update zona set cerrada = false where id = $1', [partido.zonaId])
+    }
+
+    const respuesta = await aplicarResultado(cliente, partido, sets, ganador, { corrigiendo: true })
+
+    // Quién cambió de categoría respecto de antes de la corrección (no solo respecto de después de revertir)
+    const categoriasDespues = await categoriasDe(jugadorIds, partido.disciplina, cliente)
+    const cambiosDeCategoria = jugadorIds
+      .filter((id) => categoriasAntes.get(id) && categoriasAntes.get(id).categoriaId !== categoriasDespues.get(id)?.categoriaId)
+      .map((id) => ({
+        jugador: { id, nombre: categoriasDespues.get(id).nombre, apellido: categoriasDespues.get(id).apellido },
+        categoriaAnterior: categoriasAntes.get(id).categoria,
+        categoriaNueva: categoriasDespues.get(id).categoria,
+      }))
+    const cambiaron = new Set(cambiosDeCategoria.map((c) => c.jugador.id))
+
+    return {
+      resultado: 'OK',
+      ...respuesta,
+      puntosOtorgados: respuesta.puntosOtorgados.map((p) => ({ ...p, cambioCategoria: cambiaron.has(p.jugador.id) })),
+      cambioGanador: anterior.ganadorInscripcionId !== ganadorNuevoId,
+      anterior,
+      cambiosDeCategoria,
+    }
+  })

@@ -114,6 +114,22 @@ export const revertirMovimientos = async (partidoId, db = pool) => {
   return recalculados.map(resumir)
 }
 
+// Lo mismo, pero solo de ciertas instancias y para varios partidos a la vez. Sirve cuando los puntos de una instancia
+// quedaron atados a otro partido que el que se corrige: al cerrarse una zona, CLASIFICADO_DE_ZONA y PARTICIPACION se
+// otorgan con el último partido de la zona, pero dependen de todos.
+export const revertirMovimientosPorInstancia = async (partidoIds, instancias, db = pool) => {
+  const { rows } = await db.query(
+    `update movimiento_puntos m set revertido = true
+       from regla_puntuacion g
+      where g.id = m.regla_id and m.partido_id = any($1) and g.instancia::text = any($2) and not m.revertido
+      returning m.ranking_id`,
+    [partidoIds, instancias]
+  )
+  if (rows.length === 0) return []
+  const recalculados = await recalcularRankings('r.id = any($1)', [[...new Set(rows.map((r) => r.ranking_id))]], db)
+  return recalculados.map(resumir)
+}
+
 // Recalcula desde los movimientos los puntos y la categoría de todos los jugadores de una disciplina.
 // Sirve para corregir el ranking si cambiaron los rangos de las categorías.
 export const recalcularRanking = async (disciplina, db = pool) =>
