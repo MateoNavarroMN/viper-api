@@ -2,7 +2,7 @@ import { confirmarPago } from './modelo.pago.inscripciones.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-// POST /api/inscripciones/:id/confirmar-pago  (CU 3.2 · 7a, Recepcionista, Organizador y Administrador)
+// POST /api/inscripciones/:id/confirmar-pago  (CU 3.2 · 7a, Recepcionista y Administrador)
 // Registra el cobro en efectivo en recepción: pasa a PAGADO y guarda la fecha y quién lo registró.
 export const confirmar = async (req, res) => {
   const { id } = req.params
