@@ -14,12 +14,14 @@ const SQL_CATEGORIA = `
       order by c.puntos_minimos desc limit 1),
     (select c.id from categoria_tecnica c where c.disciplina = r.disciplina order by c.puntos_minimos limit 1))`
 
-// Regla vigente de una instancia: la más reciente cuya fecha de vigencia ya llegó (null si no hay ninguna)
+// Regla vigente de una instancia: la más reciente cuya fecha de vigencia ya llegó (null si no hay ninguna).
+// La instancia se compara como texto: si la base todavía no tiene ese valor (por ejemplo DIECISEISAVOS), no hay
+// regla y no se otorgan puntos, en lugar de fallar por un valor de enum que no existe.
 export const buscarRegla = async (disciplina, instancia, db = pool) => {
   const { rows } = await db.query(
     `select id, disciplina, instancia, puntos_otorgados as puntos
        from regla_puntuacion
-      where disciplina = $1 and instancia = $2 and vigente_desde <= current_date
+      where disciplina = $1 and instancia::text = $2 and vigente_desde <= current_date
       order by vigente_desde desc
       limit 1`,
     [disciplina, instancia]
