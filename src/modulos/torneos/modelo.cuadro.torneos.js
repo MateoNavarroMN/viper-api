@@ -262,6 +262,17 @@ export const obtenerCuadro = async (torneoId) => {
   )
   const porInscripcion = new Map(inscripciones.map((i) => [i.id, participante(i)]))
 
+  // Los games de cada set de los partidos que ya se jugaron (el set 3 puede ser un super tie-break: 10-7)
+  const { rows: filasSets } = await pool.query(
+    `select s.partido_id as "partidoId", s.numero, s.games_local as local, s.games_visitante as visitante
+       from set_partido s join partido p on p.id = s.partido_id
+      where p.torneo_id = $1
+      order by s.numero`,
+    [torneoId]
+  )
+  const setsDe = new Map()
+  for (const { partidoId, ...juego } of filasSets) setsDe.set(partidoId, [...(setsDe.get(partidoId) ?? []), juego])
+
   const darForma = (p) => ({
     id: p.id,
     ronda: p.ronda,
@@ -272,6 +283,7 @@ export const obtenerCuadro = async (torneoId) => {
     local: porInscripcion.get(p.localId) ?? null,
     visitante: porInscripcion.get(p.visitanteId) ?? null,
     ganadorInscripcionId: p.ganadorInscripcionId,
+    sets: setsDe.get(p.id) ?? [],
     siguiente: p.partidoSiguienteId ? { partidoId: p.partidoSiguienteId, ranura: p.ranuraEnSiguiente } : null,
     programacion: p.fecha ? { fecha: p.fecha, horaInicio: p.horaInicio, horaFin: p.horaFin, cancha: { id: p.canchaId, nombre: p.canchaNombre } } : null,
   })
