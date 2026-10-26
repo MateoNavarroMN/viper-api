@@ -115,7 +115,7 @@ export const revertirMovimientos = async (partidoId, db = pool) => {
 }
 
 // Lo mismo, pero solo de ciertas instancias y para varios partidos a la vez. Sirve cuando los puntos de una instancia
-// quedaron atados a otro partido que el que se corrige: al cerrarse una zona, CLASIFICADO_DE_ZONA y PARTICIPACION se
+// quedaron atados a otro partido que el que se corrige: al cerrarse una zona, CLASIFICADO_DE_ZONA se
 // otorgan con el último partido de la zona, pero dependen de todos.
 export const revertirMovimientosPorInstancia = async (partidoIds, instancias, db = pool) => {
   const { rows } = await db.query(

@@ -12,11 +12,11 @@ import { agendaDeJugadores } from './modelo.partidos.js'
 // y el cierre del torneo se guardan juntos o no se guarda nada. Lo que no depende de la base (que el marcador sea válido) lo valida antes el controller.
 //
 // Puntos (reglas de `regla_puntuacion`, valores de ejemplo hasta confirmarlos con el club):
-//   - Zona: el ganador de cada partido recibe VICTORIA_EN_ZONA. Al cerrarse la zona, los que clasifican reciben
-//     CLASIFICADO_DE_ZONA y el resto PARTICIPACION.
-//   - Eliminatoria: el que pierde recibe los puntos de la instancia en la que quedó (CUARTOS, SEMIFINAL…); el que gana
-//     no suma todavía, porque va a recibir los de la instancia en la que quede. En la final, el que pierde recibe
-//     FINAL y el que gana, CAMPEON.
+// Los puntos se dan partido a partido, según se gane o se pierda, sin esperar a que el jugador quede eliminado:
+//   - Zona: el que gana recibe VICTORIA_EN_ZONA y el que pierde, PARTICIPACION. Al cerrarse la zona, los que clasifican
+//     reciben además CLASIFICADO_DE_ZONA.
+//   - Eliminatoria: el que gana recibe los puntos de la instancia que acaba de ganar (CUARTOS, SEMIFINAL…) y el que
+//     pierde, PARTICIPACION. Quien gana la final recibe además CAMPEON.
 // Todos los movimientos quedan atados al partido (`movimiento_puntos.partido_id`), así se pueden revertir cuando se
 // corrige el resultado (CU 3.6 · 6a).
 
@@ -177,6 +177,7 @@ const aplicarResultado = async (cliente, partido, sets, ganador, { corrigiendo =
 
   if (partido.fase === 'ZONA') {
     await dar('VICTORIA_EN_ZONA', [ganadorId])
+    await dar('PARTICIPACION', [perdedorId])
 
     const tabla = await actualizarTablaDeZona(partido.zonaId, partido.clasificanPorZona ?? 2, cliente)
     const deLaZona = await cargarParticipantes(tabla.posiciones.map((p) => p.inscripcionId), cliente)
@@ -187,7 +188,6 @@ const aplicarResultado = async (cliente, partido, sets, ganador, { corrigiendo =
     if (cerrada) {
       await cliente.query('update zona set cerrada = true where id = $1', [partido.zonaId])
       await dar('CLASIFICADO_DE_ZONA', tabla.posiciones.filter((p) => p.clasificado).map((p) => p.inscripcionId))
-      await dar('PARTICIPACION', tabla.posiciones.filter((p) => !p.clasificado).map((p) => p.inscripcionId))
     }
 
     const { rows: nombre } = await cliente.query('select nombre from zona where id = $1', [partido.zonaId])
@@ -202,7 +202,8 @@ const aplicarResultado = async (cliente, partido, sets, ganador, { corrigiendo =
     }
   } else {
     const esFinal = partido.instancia === 'FINAL'
-    await dar(partido.instancia, [perdedorId])
+    await dar(partido.instancia, [ganadorId])
+    await dar('PARTICIPACION', [perdedorId])
     if (esFinal) await dar('CAMPEON', [ganadorId])
 
     if (partido.siguienteId) {
@@ -343,11 +344,12 @@ export const corregirResultado = (partidoId, sets, ganador) =>
     const categoriasAntes = await categoriasDe(jugadorIds, partido.disciplina, cliente)
 
     // Se deshace lo que dio el resultado anterior: los puntos de este partido y, en una zona, también los de clasificación,
-    // que se otorgaron con el último partido de la zona pero dependen de todos. Los movimientos quedan revertidos, no borrados.
+    // que se otorgaron con el último partido de la zona pero dependen de todos. Los de victoria y participación de los
+    // demás partidos de la zona no se tocan. Los movimientos quedan revertidos, no borrados.
     await revertirMovimientos(partidoId, cliente)
     if (partido.fase === 'ZONA') {
       const { rows: deLaZona } = await cliente.query('select id from partido where zona_id = $1', [partido.zonaId])
-      await revertirMovimientosPorInstancia(deLaZona.map((p) => p.id), ['CLASIFICADO_DE_ZONA', 'PARTICIPACION'], cliente)
+      await revertirMovimientosPorInstancia(deLaZona.map((p) => p.id), ['CLASIFICADO_DE_ZONA'], cliente)
       await cliente.query('update zona set cerrada = false where id = $1', [partido.zonaId])
     }
 
