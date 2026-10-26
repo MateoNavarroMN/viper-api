@@ -1,10 +1,10 @@
 import { pool } from '../../config/conexion.bd.js'
 import { otorgarPuntos, revertirMovimientos, revertirMovimientosPorInstancia } from '../ranking/modelo.ranking.js'
 import { cancelarReserva, listarCanchas, listarOcupadas, reservarParaPartido } from '../reservas/modelo.reservas.js'
-import { calcularPosiciones } from '../torneos/algoritmo.posiciones.torneos.js'
-import { DESCANSO_MIN, programar } from '../torneos/scheduler.torneos.js'
+import { despuesDelDescanso, programar } from '../torneos/scheduler.torneos.js'
 import { jugadoresDeInscripciones } from '../torneos/modelo.inscripciones.js'
 import { bloquearTorneo, cambiarEstadoTorneo } from '../torneos/modelo.torneos.js'
+import { actualizarTablaDeZona, cargarParticipantes } from '../torneos/modelo.zonas.torneos.js'
 import { agendaDeJugadores } from './modelo.partidos.js'
 
 // Registrar (CU 3.6 · pasos 5 a 9) y corregir (flujo alternativo 6a) el resultado de un partido. Todo corre en una
@@ -20,40 +20,7 @@ import { agendaDeJugadores } from './modelo.partidos.js'
 // Todos los movimientos quedan atados al partido (`movimiento_puntos.partido_id`), así se pueden revertir cuando se
 // corrige el resultado (CU 3.6 · 6a).
 
-// Datos de las inscripciones que juegan: quiénes son (titular y compañero) para mostrarlos y darles los puntos
-const cargarParticipantes = async (inscripcionIds, db) => {
-  if (inscripcionIds.length === 0) return new Map()
-  const { rows } = await db.query(
-    `select i.id, i.cabeza_de_serie as "cabezaDeSerie",
-            i.titular_jugador_id as "titularId", ut.nombre as "titularNombre", ut.apellido as "titularApellido",
-            i.companero_jugador_id as "companeroId", uc.nombre as "companeroNombre", uc.apellido as "companeroApellido"
-       from inscripcion i
-       join jugador jt on jt.id = i.titular_jugador_id
-       join usuario ut on ut.id = jt.usuario_id
-       left join jugador jc on jc.id = i.companero_jugador_id
-       left join usuario uc on uc.id = jc.usuario_id
-      where i.id = any($1)`,
-    [inscripcionIds]
-  )
-  return new Map(rows.map((r) => [r.id, {
-    inscripcionId: r.id,
-    cabezaDeSerie: r.cabezaDeSerie,
-    titular: { id: r.titularId, nombre: r.titularNombre, apellido: r.titularApellido },
-    companero: r.companeroId ? { id: r.companeroId, nombre: r.companeroNombre, apellido: r.companeroApellido } : null,
-  }]))
-}
-
 const jugadoresDe = (participante) => [participante.titular.id, participante.companero?.id].filter(Boolean)
-
-// Cuándo puede empezar el partido que sigue: al terminar el anterior ({ fecha, hora }) más el descanso mínimo
-const despuesDelDescanso = ({ fecha, hora }) => {
-  const total = Number(hora.slice(0, 2)) * 60 + Number(hora.slice(3, 5)) + DESCANSO_MIN
-  const resto = total % 1440
-  return {
-    fecha: new Date(Date.parse(`${fecha}T00:00:00Z`) + Math.floor(total / 1440) * 86400000).toISOString().slice(0, 10),
-    hora: `${String(Math.floor(resto / 60)).padStart(2, '0')}:${String(resto % 60).padStart(2, '0')}`,
-  }
-}
 
 // Programa el partido siguiente cuando ya tiene a los dos rivales y todavía no tiene cancha ni horario (CU 3.5).
 // Busca la primera franja libre desde que terminó el partido que lo alimenta. Si no hay lugar no es un error: el
@@ -78,34 +45,6 @@ const programarSiguiente = async (siguiente, desdeFranja, torneo, jugadores, db)
   const { resultado } = await reservarParaPartido(siguiente.id, franja, db)
   if (resultado !== 'OK') return null
   return { fecha: franja.fecha, horaInicio: franja.horaInicio, horaFin: franja.horaFin, canchaId: franja.canchaId }
-}
-
-// Recalcula la tabla de la zona con todos sus partidos y la guarda en `posicion_zona`.
-// Devuelve la tabla de calcularPosiciones.
-const actualizarTablaDeZona = async (zonaId, clasifican, db) => {
-  const { rows: partidos } = await db.query(
-    `select p.id, p.local_inscripcion_id as "localId", p.visitante_inscripcion_id as "visitanteId",
-            p.ganador_inscripcion_id as "ganadorId", p.estado,
-            coalesce((select jsonb_agg(jsonb_build_object('local', s.games_local, 'visitante', s.games_visitante) order by s.numero)
-                        from set_partido s where s.partido_id = p.id), '[]'::jsonb) as sets
-       from partido p
-      where p.zona_id = $1`,
-    [zonaId]
-  )
-  const { rows: inscritos } = await db.query('select inscripcion_id as id from posicion_zona where zona_id = $1', [zonaId])
-  const tabla = calcularPosiciones(partidos, { clasifican, participantes: inscritos.map((i) => i.id) })
-
-  await db.query(
-    `update posicion_zona pz
-        set posicion = x.posicion, partidos_ganados = x."partidosGanados", partidos_perdidos = x."partidosPerdidos",
-            sets_ganados = x."setsGanados", sets_perdidos = x."setsPerdidos",
-            games_ganados = x."gamesGanados", games_perdidos = x."gamesPerdidos", clasificado = x.clasificado
-       from jsonb_to_recordset($2::jsonb) as x("inscripcionId" uuid, posicion int, "partidosGanados" int, "partidosPerdidos" int,
-            "setsGanados" int, "setsPerdidos" int, "gamesGanados" int, "gamesPerdidos" int, clasificado boolean)
-      where pz.zona_id = $1 and pz.inscripcion_id = x."inscripcionId"`,
-    [zonaId, JSON.stringify(tabla.posiciones)]
-  )
-  return tabla
 }
 
 // Carga el partido con su torneo y el estado del partido siguiente, bloqueando la fila del partido
@@ -423,6 +362,8 @@ export const corregirResultado = (partidoId, sets, ganador) =>
       const { rows: deLaZona } = await cliente.query('select id from partido where zona_id = $1', [partido.zonaId])
       await revertirMovimientosPorInstancia(deLaZona.map((p) => p.id), ['CLASIFICADO_DE_ZONA'], cliente)
       await cliente.query('update zona set cerrada = false where id = $1', [partido.zonaId])
+      // Con otro marcador los empates pueden ser otros: el orden que se eligió a mano deja de valer
+      await cliente.query('update posicion_zona set orden_manual = null where zona_id = $1', [partido.zonaId])
     }
 
     const respuesta = await aplicarResultado(cliente, partido, sets, ganador, { corrigiendo: true })

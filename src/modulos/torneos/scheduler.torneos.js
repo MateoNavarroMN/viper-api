@@ -25,6 +25,12 @@ const aDia = (fecha) => {
 
 const aFecha = (dia) => new Date(dia * 86400000).toISOString().slice(0, 10)
 
+// Cuándo puede empezar el partido que sigue: al terminar el anterior ({ fecha, hora }) más el descanso mínimo
+export const despuesDelDescanso = ({ fecha, hora }) => {
+  const total = aMinutos(hora) + DESCANSO_MIN
+  return { fecha: aFecha(aDia(fecha) + Math.floor(total / 1440)), hora: aHora(total % 1440) }
+}
+
 // Instante absoluto en minutos para comparar franjas de distintos días.
 const instante = (fecha, hhmm) => aDia(fecha) * 1440 + aMinutos(hhmm)
 
