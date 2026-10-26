@@ -1,6 +1,6 @@
 import { pool } from '../../config/conexion.bd.js'
 import { otorgarPuntos, revertirMovimientos, revertirMovimientosPorInstancia } from '../ranking/modelo.ranking.js'
-import { listarCanchas, listarOcupadas, reservarParaPartido } from '../reservas/modelo.reservas.js'
+import { cancelarReserva, listarCanchas, listarOcupadas, reservarParaPartido } from '../reservas/modelo.reservas.js'
 import { calcularPosiciones } from '../torneos/algoritmo.posiciones.torneos.js'
 import { programar } from '../torneos/scheduler.torneos.js'
 import { jugadoresDeInscripciones } from '../torneos/modelo.inscripciones.js'
@@ -145,24 +145,78 @@ const enTransaccion = async (partidoId, trabajo) => {
   }
 }
 
-// Guarda el resultado y todo lo que se desprende de él (sets, ganador, tabla de la zona o avance en el cuadro, puntos y
-// cierre del torneo). Sirve para cargarlo por primera vez y para corregirlo: en una corrección, antes se revirtió lo
-// que había, así que acá se calcula todo de nuevo como si fuera la primera vez. `sets` ya es un marcador válido y
-// `ganador` es 'LOCAL' o 'VISITANTE'. Devuelve el cuerpo de la respuesta (sin `resultado`).
-const aplicarResultado = async (cliente, partido, sets, ganador, { corrigiendo = false } = {}) => {
-  const partidoId = partido.id
-  const ganadorId = ganador === 'LOCAL' ? partido.localId : partido.visitanteId
-  const perdedorId = ganador === 'LOCAL' ? partido.visitanteId : partido.localId
-
-  // Sets y ganador
-  await cliente.query('delete from set_partido where partido_id = $1', [partidoId])
-  await cliente.query(
-    `insert into set_partido (partido_id, numero, games_local, games_visitante)
-     select $1, x.numero, x.local, x.visitante from jsonb_to_recordset($2::jsonb) as x(numero int, local int, visitante int)`,
-    [partidoId, JSON.stringify(sets.map((s, i) => ({ numero: i + 1, local: s.local, visitante: s.visitante })))]
+// Pone al ganador en su lugar del partido siguiente y, si ya tiene a los dos rivales, lo programa en la primera franja
+// libre (CU 3.5). Devuelve `siguiente` ({ partidoId, instancia, ranura, rivalesDefinidos, programacion }).
+// `partido` trae el partido que se resolvió (su franja marca desde cuándo programar) y los datos del torneo.
+const avanzarGanador = async (cliente, partido, ganadorId, efectos) => {
+  // Si es una corrección y cambió el ganador, el nuevo ocupa el lugar del anterior (con la misma cancha y horario)
+  const columna = partido.ranura === 'LOCAL' ? 'local_inscripcion_id' : 'visitante_inscripcion_id'
+  const { rows: proximo } = await cliente.query(
+    `update partido set ${columna} = $2 where id = $1
+     returning id, instancia, local_inscripcion_id as "localId", visitante_inscripcion_id as "visitanteId", reserva_id as "reservaId"`,
+    [partido.siguienteId, ganadorId]
   )
-  await cliente.query("update partido set estado = 'FINALIZADO', ganador_inscripcion_id = $2 where id = $1", [partidoId, ganadorId])
+  const s = proximo[0]
+  const siguiente = { partidoId: s.id, instancia: s.instancia, ranura: partido.ranura, rivalesDefinidos: Boolean(s.localId && s.visitanteId), programacion: null }
+  if (siguiente.rivalesDefinidos && !s.reservaId) {
+    // Desde que terminó el partido que acaba de resolverse (su franja), o desde el inicio del torneo si no tenía
+    const { rows: franja } = partido.reservaId
+      ? await cliente.query(`select to_char(fecha, 'YYYY-MM-DD') as fecha, to_char(hora_fin, 'HH24:MI') as hora from reserva where id = $1`, [partido.reservaId])
+      : { rows: [] }
+    const desdeFranja = franja[0] ?? { fecha: partido.fechaInicio, hora: '08:00' }
+    const rivales = await cargarParticipantes([s.localId, s.visitanteId], cliente)
+    const jugadores = [...rivales.values()].flatMap(jugadoresDe)
+    siguiente.programacion = await programarSiguiente(s, desdeFranja, partido, jugadores, cliente)
+  }
+  // Si el otro lado del partido siguiente nunca va a tener rival (doble baja), el ganador sigue de largo
+  await resolverSinRival(cliente, partido.siguienteId, partido, efectos)
+  return siguiente
+}
 
+// Un partido cuyo rival de un lado terminó en doble baja nunca va a tener a ese rival. Cuando ya no puede llegar nadie más
+// por ese lado, el partido se da por W.O. («Avanza por baja»): el único rival que quedó sigue de largo, y si no quedó
+// ninguno el partido también queda sin ganador y el vacío pasa al siguiente. Sin puntos, porque no se jugó. Si era la final,
+// el torneo termina. `torneo` trae los datos del torneo (disciplina, fechas, estado) para programar lo que siga.
+const resolverSinRival = async (cliente, partidoId, torneo, efectos) => {
+  const { rows: alimentan } = await cliente.query(
+    'select estado, ganador_inscripcion_id as "ganadorId" from partido where partido_siguiente_id = $1',
+    [partidoId]
+  )
+  const muertos = alimentan.filter((a) => a.estado === 'WO' && !a.ganadorId).length
+  if (muertos === 0) return
+
+  const { rows } = await cliente.query(
+    `select id, estado, instancia, local_inscripcion_id as "localId", visitante_inscripcion_id as "visitanteId",
+            partido_siguiente_id as "siguienteId", ranura_en_siguiente as ranura, reserva_id as "reservaId"
+       from partido where id = $1 for update`,
+    [partidoId]
+  )
+  const s = rows[0]
+  if (s.estado === 'FINALIZADO' || s.estado === 'WO') return
+  const rivales = [s.localId, s.visitanteId].filter(Boolean)
+  if (rivales.length + muertos < alimentan.length) return // todavía puede llegar alguien por el otro lado
+
+  const ganadorId = rivales[0] ?? null
+  if (s.reservaId) await cancelarReserva(s.reservaId, cliente)
+  await cliente.query("update partido set estado = 'WO', ganador_inscripcion_id = $2, motivo_wo = 'AVANCE_POR_BAJA' where id = $1", [s.id, ganadorId])
+  efectos.encadenados.push({ partidoId: s.id, instancia: s.instancia, ganadorInscripcionId: ganadorId })
+
+  const actual = { ...torneo, id: s.id, instancia: s.instancia, siguienteId: s.siguienteId, ranura: s.ranura, reservaId: s.reservaId }
+  if (s.siguienteId) {
+    if (ganadorId) await avanzarGanador(cliente, actual, ganadorId, efectos)
+    else await resolverSinRival(cliente, s.siguienteId, actual, efectos)
+  } else if (torneo.estadoTorneo === 'EN_CURSO') {
+    await cambiarEstadoTorneo(torneo.torneoId, 'FINALIZADO', undefined, cliente)
+    efectos.torneoFinalizado = true
+  }
+}
+
+// Lo que se desprende de que un partido quedó resuelto, con ganador o sin él (doble baja): los puntos, la tabla de la
+// zona o el avance en el cuadro y el cierre del torneo. Lo comparten el resultado (jugado) y el W.O. (no jugado).
+//   ganadorId / perdedorId: inscripciones (ganadorId null en una doble baja)
+//   puntosAlPerdedor: el que perdió jugando suma PARTICIPACION; el que faltó no suma nada
+const resolverPartido = async (cliente, partido, { ganadorId, perdedorId, puntosAlPerdedor, corrigiendo = false }) => {
+  const partidoId = partido.id
   const participantes = await cargarParticipantes([partido.localId, partido.visitanteId], cliente)
   const puntosOtorgados = []
   const dar = async (instancia, inscripcionIds) => {
@@ -170,14 +224,14 @@ const aplicarResultado = async (cliente, partido, sets, ganador, { corrigiendo =
     const otorgados = await otorgarPuntos({ partidoId, disciplina: partido.disciplina, instancia, jugadorIds }, cliente)
     puntosOtorgados.push(...otorgados.map((o) => ({ ...o, instancia })))
   }
+  const efectos = { encadenados: [], torneoFinalizado: false }
 
   let zona = null
   let siguiente = null
-  let torneoFinalizado = false
 
   if (partido.fase === 'ZONA') {
-    await dar('VICTORIA_EN_ZONA', [ganadorId])
-    await dar('PARTICIPACION', [perdedorId])
+    if (ganadorId) await dar('VICTORIA_EN_ZONA', [ganadorId])
+    if (ganadorId && puntosAlPerdedor) await dar('PARTICIPACION', [perdedorId])
 
     const tabla = await actualizarTablaDeZona(partido.zonaId, partido.clasificanPorZona ?? 2, cliente)
     const deLaZona = await cargarParticipantes(tabla.posiciones.map((p) => p.inscripcionId), cliente)
@@ -202,37 +256,21 @@ const aplicarResultado = async (cliente, partido, sets, ganador, { corrigiendo =
     }
   } else {
     const esFinal = partido.instancia === 'FINAL'
-    await dar(partido.instancia, [ganadorId])
-    await dar('PARTICIPACION', [perdedorId])
-    if (esFinal) await dar('CAMPEON', [ganadorId])
+    if (ganadorId) {
+      await dar(partido.instancia, [ganadorId])
+      if (puntosAlPerdedor) await dar('PARTICIPACION', [perdedorId])
+      if (esFinal) await dar('CAMPEON', [ganadorId])
+    }
 
     if (partido.siguienteId) {
-      // Si es una corrección y cambió el ganador, el nuevo ocupa el lugar del anterior (con la misma cancha y horario)
-      const columna = partido.ranura === 'LOCAL' ? 'local_inscripcion_id' : 'visitante_inscripcion_id'
-      const { rows: proximo } = await cliente.query(
-        `update partido set ${columna} = $2 where id = $1
-         returning id, instancia, local_inscripcion_id as "localId", visitante_inscripcion_id as "visitanteId", reserva_id as "reservaId"`,
-        [partido.siguienteId, ganadorId]
-      )
-      const s = proximo[0]
-      siguiente = { partidoId: s.id, instancia: s.instancia, ranura: partido.ranura, rivalesDefinidos: Boolean(s.localId && s.visitanteId), programacion: null }
-      if (siguiente.rivalesDefinidos && !s.reservaId) {
-        // Desde que terminó el partido que acaba de resolverse (su franja), o desde el inicio del torneo si no tenía
-        const { rows: franja } = await cliente.query(
-          `select to_char(fecha, 'YYYY-MM-DD') as fecha, to_char(hora_fin, 'HH24:MI') as hora from reserva where id = $1`,
-          [partido.reservaId]
-        )
-        const desdeFranja = franja[0] ?? { fecha: partido.fechaInicio, hora: '08:00' }
-        const rivales = await cargarParticipantes([s.localId, s.visitanteId], cliente)
-        const jugadores = [...rivales.values()].flatMap(jugadoresDe)
-        siguiente.programacion = await programarSiguiente(s, desdeFranja, partido, jugadores, cliente)
-      }
+      if (ganadorId) siguiente = await avanzarGanador(cliente, partido, ganadorId, efectos)
+      else await resolverSinRival(cliente, partido.siguienteId, partido, efectos)
     }
 
     if (esFinal && !partido.siguienteId) {
       // Al corregir la final el torneo ya estaba FINALIZADO y sigue así
       if (!corrigiendo) await cambiarEstadoTorneo(partido.torneoId, 'FINALIZADO', undefined, cliente)
-      torneoFinalizado = true
+      efectos.torneoFinalizado = true
     }
   }
 
@@ -251,13 +289,6 @@ const aplicarResultado = async (cliente, partido, sets, ganador, { corrigiendo =
   const personas = new Map(nombres.map((n) => [n.id, n]))
 
   return {
-    partido: {
-      id: partidoId,
-      estado: 'FINALIZADO',
-      ganadorInscripcionId: ganadorId,
-      ganador,
-      sets,
-    },
     puntosOtorgados: puntosOtorgados.map((p) => ({
       jugador: { id: p.jugadorId, nombre: personas.get(p.jugadorId).nombre, apellido: personas.get(p.jugadorId).apellido },
       instancia: p.instancia,
@@ -268,7 +299,33 @@ const aplicarResultado = async (cliente, partido, sets, ganador, { corrigiendo =
     zona,
     todasLasZonasCerradas,
     siguiente,
-    torneoFinalizado,
+    encadenados: efectos.encadenados,
+    torneoFinalizado: efectos.torneoFinalizado,
+  }
+}
+
+// Guarda el resultado y todo lo que se desprende de él (sets, ganador, tabla de la zona o avance en el cuadro, puntos y
+// cierre del torneo). Sirve para cargarlo por primera vez y para corregirlo: en una corrección, antes se revirtió lo
+// que había, así que acá se calcula todo de nuevo como si fuera la primera vez. `sets` ya es un marcador válido y
+// `ganador` es 'LOCAL' o 'VISITANTE'. Devuelve el cuerpo de la respuesta (sin `resultado`).
+const aplicarResultado = async (cliente, partido, sets, ganador, { corrigiendo = false } = {}) => {
+  const partidoId = partido.id
+  const ganadorId = ganador === 'LOCAL' ? partido.localId : partido.visitanteId
+  const perdedorId = ganador === 'LOCAL' ? partido.visitanteId : partido.localId
+
+  // Sets y ganador
+  await cliente.query('delete from set_partido where partido_id = $1', [partidoId])
+  await cliente.query(
+    `insert into set_partido (partido_id, numero, games_local, games_visitante)
+     select $1, x.numero, x.local, x.visitante from jsonb_to_recordset($2::jsonb) as x(numero int, local int, visitante int)`,
+    [partidoId, JSON.stringify(sets.map((s, i) => ({ numero: i + 1, local: s.local, visitante: s.visitante })))]
+  )
+  await cliente.query("update partido set estado = 'FINALIZADO', ganador_inscripcion_id = $2 where id = $1", [partidoId, ganadorId])
+
+  const resto = await resolverPartido(cliente, partido, { ganadorId, perdedorId, puntosAlPerdedor: true, corrigiendo })
+  return {
+    partido: { id: partidoId, estado: 'FINALIZADO', ganadorInscripcionId: ganadorId, ganador, sets },
+    ...resto,
   }
 }
 
@@ -373,5 +430,38 @@ export const corregirResultado = (partidoId, sets, ganador) =>
       cambioGanador: anterior.ganadorInscripcionId !== ganadorNuevoId,
       anterior,
       cambiosDeCategoria,
+    }
+  })
+
+// POST wo. Registra la baja de una pareja o jugador (CU 3.7): el partido queda en W.O. sin jugarse.
+//   ausente: 'LOCAL' | 'VISITANTE' | 'AMBOS'. El que no falta gana por W.O.; con AMBOS (doble baja) no hay ganador.
+//   motivo:  texto que se guarda en `partido.motivo_wo`: 'RETIRO' o 'RETIRO: se lesionó' si hay detalle.
+// Puntos: el que gana recibe los de victoria de siempre (zona: VICTORIA_EN_ZONA; eliminatoria: los de la instancia) y el
+// que faltó no recibe nada. Una zona cuenta el W.O. como 6-0 6-0 en la tabla; en una doble baja no suma a nadie. En la
+// eliminatoria el ganador avanza y, con doble baja, el rival del partido siguiente avanza por W.O. Se cancela la reserva
+// del partido, que libera la cancha.
+// Devuelve { resultado: 'NO_ENCONTRADO' | 'YA_RESUELTO' | 'NO_ADMITE' | 'OK', ... }. Con 'OK': partido (con `ausente`, `motivo`
+// y `detalle`), puntosOtorgados, zona, todasLasZonasCerradas, siguiente, encadenados (los partidos siguientes que se
+// resolvieron solos por la baja) y torneoFinalizado.
+export const registrarWO = (partidoId, { ausente, motivo, detalle = null }) =>
+  enTransaccion(partidoId, async (cliente, partido) => {
+    if (partido.estado === 'FINALIZADO' || partido.estado === 'WO') return { resultado: 'YA_RESUELTO' }
+    if (partido.estadoTorneo !== 'EN_CURSO' || partido.esBye || !partido.localId || !partido.visitanteId) return { resultado: 'NO_ADMITE' }
+
+    const ganador = ausente === 'AMBOS' ? null : ausente === 'LOCAL' ? 'VISITANTE' : 'LOCAL'
+    const ganadorId = ganador === 'LOCAL' ? partido.localId : ganador === 'VISITANTE' ? partido.visitanteId : null
+    const perdedorId = ganador === 'LOCAL' ? partido.visitanteId : ganador === 'VISITANTE' ? partido.localId : null
+
+    // La franja se libera antes de resolver: el partido siguiente se programa desde donde terminaba esta
+    if (partido.reservaId) await cancelarReserva(partido.reservaId, cliente)
+    await cliente.query("update partido set estado = 'WO', ganador_inscripcion_id = $2, motivo_wo = $3 where id = $1", [
+      partidoId, ganadorId, detalle ? `${motivo}: ${detalle}` : motivo,
+    ])
+
+    const resto = await resolverPartido(cliente, partido, { ganadorId, perdedorId, puntosAlPerdedor: false })
+    return {
+      resultado: 'OK',
+      partido: { id: partidoId, estado: 'WO', ganadorInscripcionId: ganadorId, ganador, ausente, motivo, detalle },
+      ...resto,
     }
   })

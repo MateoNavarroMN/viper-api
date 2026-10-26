@@ -226,6 +226,16 @@ const participante = (i) => (i.id ? {
   companero: persona(i.companeroJugadorId, i.companeroNombre, i.companeroApellido),
 } : null)
 
+// Datos de un partido terminado por W.O.: quién faltó ('LOCAL' | 'VISITANTE' | 'AMBOS'), el motivo y el detalle. En un partido
+// que se resolvió solo porque su rival nunca llegó (motivo AVANCE_POR_BAJA) no hay nadie que haya faltado: `ausente` es null.
+const darFormaWO = (p) => {
+  const [motivo, ...resto] = (p.motivoWo ?? '').split(': ')
+  const detalle = resto.join(': ') || null
+  if (motivo === 'AVANCE_POR_BAJA') return { ausente: null, motivo, detalle: null }
+  const ausente = !p.ganadorInscripcionId ? 'AMBOS' : p.ganadorInscripcionId === p.localId ? 'VISITANTE' : 'LOCAL'
+  return { ausente, motivo, detalle }
+}
+
 // GET cuadro: zonas (posiciones y partidos) y rondas (partidos encadenados). Las dos formas se piden juntas: un
 // torneo con zonas tiene `zonas` y, cuando exista la fase eliminatoria (CU 3.9), también `rondas`.
 // Devuelve { resultado: 'NO_ENCONTRADO' | 'SIN_CUADRO' | 'OK', ... }.
@@ -237,7 +247,7 @@ export const obtenerCuadro = async (torneoId) => {
   const { rows: partidos } = await pool.query(
     `select p.id, p.zona_id as "zonaId", p.fase, p.ronda, p.posicion, p.instancia, p.estado, p.es_bye as "esBye",
             p.ganador_inscripcion_id as "ganadorInscripcionId", p.partido_siguiente_id as "partidoSiguienteId",
-            p.ranura_en_siguiente as "ranuraEnSiguiente",
+            p.ranura_en_siguiente as "ranuraEnSiguiente", p.motivo_wo as "motivoWo",
             p.local_inscripcion_id as "localId", p.visitante_inscripcion_id as "visitanteId",
             r.cancha_id as "canchaId", ca.nombre as "canchaNombre", to_char(r.fecha, 'YYYY-MM-DD') as fecha,
             to_char(r.hora_inicio, 'HH24:MI') as "horaInicio", to_char(r.hora_fin, 'HH24:MI') as "horaFin"
@@ -284,6 +294,7 @@ export const obtenerCuadro = async (torneoId) => {
     visitante: porInscripcion.get(p.visitanteId) ?? null,
     ganadorInscripcionId: p.ganadorInscripcionId,
     sets: setsDe.get(p.id) ?? [],
+    wo: p.estado === 'WO' ? darFormaWO(p) : null,
     siguiente: p.partidoSiguienteId ? { partidoId: p.partidoSiguienteId, ranura: p.ranuraEnSiguiente } : null,
     programacion: p.fecha ? { fecha: p.fecha, horaInicio: p.horaInicio, horaFin: p.horaFin, cancha: { id: p.canchaId, nombre: p.canchaNombre } } : null,
   })
