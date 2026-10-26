@@ -42,6 +42,23 @@ const obtenerOCrearRanking = async (jugadorId, disciplina, db) => {
   return rows[0]
 }
 
+// Los puntos que un ranking ya tenía y no vienen de ningún movimiento (los de partida de un jugador, cargados a mano o de
+// una carga inicial) se registran como un movimiento más, con la regla PARTICIPACION como etiqueta. Se hace justo antes de
+// cambiar los movimientos de ese ranking: así el total, que siempre se recalcula como la suma de sus movimientos, no los
+// pierde. Si el total es menor o igual a la suma no hay nada que registrar.
+const conciliar = async (rankingIds, db) => {
+  if (rankingIds.length === 0) return
+  await db.query(
+    `insert into movimiento_puntos (ranking_id, regla_id, puntos)
+     select r.id, g.id, r.puntos_totales - s.suma
+       from ranking_disciplina r
+       cross join lateral (select coalesce(sum(m.puntos), 0)::int as suma from movimiento_puntos m where m.ranking_id = r.id and not m.revertido) s
+       join lateral (select id from regla_puntuacion where disciplina = r.disciplina and instancia::text = 'PARTICIPACION' order by vigente_desde desc limit 1) g on true
+      where r.id = any($1) and r.puntos_totales > s.suma`,
+    [rankingIds]
+  )
+}
+
 // Deja los puntos totales y la categoría de esos rankings al día. Devuelve, por ranking, el antes y el después.
 // Son dos pasos porque una fila no puede actualizarse dos veces en la misma sentencia: primero los puntos y después
 // la categoría, que sale de los puntos ya actualizados.
@@ -86,6 +103,7 @@ export const otorgarPuntos = async ({ partidoId = null, disciplina, instancia, j
   const otorgados = []
   for (const jugadorId of [...new Set(jugadorIds)]) {
     const ranking = await obtenerOCrearRanking(jugadorId, disciplina, db)
+    await conciliar([ranking.id], db)
     const { rowCount } = await db.query(
       `insert into movimiento_puntos (ranking_id, regla_id, partido_id, puntos)
        select $1, $2, $3, $4
@@ -105,6 +123,8 @@ export const otorgarPuntos = async ({ partidoId = null, disciplina, instancia, j
 // jugadores como si no se hubieran otorgado. Los movimientos no se borran: quedan con `revertido = true`.
 // Devuelve [{ jugadorId, disciplina, puntosTotales, categoriaId, cambioCategoria }].
 export const revertirMovimientos = async (partidoId, db = pool) => {
+  const { rows: afectados } = await db.query('select distinct ranking_id from movimiento_puntos where partido_id = $1 and not revertido', [partidoId])
+  await conciliar(afectados.map((a) => a.ranking_id), db)
   const { rows } = await db.query(
     'update movimiento_puntos set revertido = true where partido_id = $1 and not revertido returning ranking_id',
     [partidoId]
@@ -118,6 +138,12 @@ export const revertirMovimientos = async (partidoId, db = pool) => {
 // quedaron atados a otro partido que el que se corrige: al cerrarse una zona, CLASIFICADO_DE_ZONA se
 // otorgan con el último partido de la zona, pero dependen de todos.
 export const revertirMovimientosPorInstancia = async (partidoIds, instancias, db = pool) => {
+  const { rows: afectados } = await db.query(
+    `select distinct m.ranking_id from movimiento_puntos m join regla_puntuacion g on g.id = m.regla_id
+      where m.partido_id = any($1) and g.instancia::text = any($2) and not m.revertido`,
+    [partidoIds, instancias]
+  )
+  await conciliar(afectados.map((a) => a.ranking_id), db)
   const { rows } = await db.query(
     `update movimiento_puntos m set revertido = true
        from regla_puntuacion g
@@ -130,14 +156,20 @@ export const revertirMovimientosPorInstancia = async (partidoIds, instancias, db
   return recalculados.map(resumir)
 }
 
+// Los que recalculan por filtro registran antes los puntos previos sin movimiento (ver `conciliar`), para no perderlos
+const conciliarYRecalcular = async (filtroSql, parametros, db) => {
+  const { rows } = await db.query(`select r.id from ranking_disciplina r where ${filtroSql}`, parametros)
+  await conciliar(rows.map((r) => r.id), db)
+  return (await recalcularRankings(filtroSql, parametros, db)).map(resumir)
+}
+
 // Recalcula desde los movimientos los puntos y la categoría de todos los jugadores de una disciplina.
 // Sirve para corregir el ranking si cambiaron los rangos de las categorías.
-export const recalcularRanking = async (disciplina, db = pool) =>
-  (await recalcularRankings('r.disciplina = $1', [disciplina], db)).map(resumir)
+export const recalcularRanking = (disciplina, db = pool) => conciliarYRecalcular('r.disciplina = $1', [disciplina], db)
 
 // Recalcula los puntos y la categoría de un jugador (en una disciplina, o en las dos si no se indica).
-export const recalcularCategoria = async (jugadorId, disciplina = null, db = pool) =>
-  (await recalcularRankings('r.jugador_id = $1 and ($2::disciplina is null or r.disciplina = $2::disciplina)', [jugadorId, disciplina], db)).map(resumir)
+export const recalcularCategoria = (jugadorId, disciplina = null, db = pool) =>
+  conciliarYRecalcular('r.jugador_id = $1 and ($2::disciplina is null or r.disciplina = $2::disciplina)', [jugadorId, disciplina], db)
 
 // Ranking de una disciplina, de más a menos puntos. Los empatados comparten posición (1, 2, 2, 4). `categoriaId`
 // filtra por categoría técnica: la posición que se muestra es la de esa categoría.
