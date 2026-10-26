@@ -2,7 +2,7 @@ import { pool } from '../../config/conexion.bd.js'
 import { otorgarPuntos, revertirMovimientos, revertirMovimientosPorInstancia } from '../ranking/modelo.ranking.js'
 import { cancelarReserva, listarCanchas, listarOcupadas, reservarParaPartido } from '../reservas/modelo.reservas.js'
 import { calcularPosiciones } from '../torneos/algoritmo.posiciones.torneos.js'
-import { programar } from '../torneos/scheduler.torneos.js'
+import { DESCANSO_MIN, programar } from '../torneos/scheduler.torneos.js'
 import { jugadoresDeInscripciones } from '../torneos/modelo.inscripciones.js'
 import { bloquearTorneo, cambiarEstadoTorneo } from '../torneos/modelo.torneos.js'
 import { agendaDeJugadores } from './modelo.partidos.js'
@@ -44,6 +44,16 @@ const cargarParticipantes = async (inscripcionIds, db) => {
 }
 
 const jugadoresDe = (participante) => [participante.titular.id, participante.companero?.id].filter(Boolean)
+
+// Cuándo puede empezar el partido que sigue: al terminar el anterior ({ fecha, hora }) más el descanso mínimo
+const despuesDelDescanso = ({ fecha, hora }) => {
+  const total = Number(hora.slice(0, 2)) * 60 + Number(hora.slice(3, 5)) + DESCANSO_MIN
+  const resto = total % 1440
+  return {
+    fecha: new Date(Date.parse(`${fecha}T00:00:00Z`) + Math.floor(total / 1440) * 86400000).toISOString().slice(0, 10),
+    hora: `${String(Math.floor(resto / 60)).padStart(2, '0')}:${String(resto % 60).padStart(2, '0')}`,
+  }
+}
 
 // Programa el partido siguiente cuando ya tiene a los dos rivales y todavía no tiene cancha ni horario (CU 3.5).
 // Busca la primera franja libre desde que terminó el partido que lo alimenta. Si no hay lugar no es un error: el
@@ -159,11 +169,16 @@ const avanzarGanador = async (cliente, partido, ganadorId, efectos) => {
   const s = proximo[0]
   const siguiente = { partidoId: s.id, instancia: s.instancia, ranura: partido.ranura, rivalesDefinidos: Boolean(s.localId && s.visitanteId), programacion: null }
   if (siguiente.rivalesDefinidos && !s.reservaId) {
-    // Desde que terminó el partido que acaba de resolverse (su franja), o desde el inicio del torneo si no tenía
-    const { rows: franja } = partido.reservaId
-      ? await cliente.query(`select to_char(fecha, 'YYYY-MM-DD') as fecha, to_char(hora_fin, 'HH24:MI') as hora from reserva where id = $1`, [partido.reservaId])
-      : { rows: [] }
-    const desdeFranja = franja[0] ?? { fecha: partido.fechaInicio, hora: '08:00' }
+    // Desde que terminó el último de los partidos que lo alimentan, más el descanso mínimo; o desde el inicio del torneo si ninguno tenía franja
+    const { rows: franja } = await cliente.query(
+      `select to_char(r.fecha, 'YYYY-MM-DD') as fecha, to_char(r.hora_fin, 'HH24:MI') as hora
+         from partido p join reserva r on r.id = p.reserva_id
+        where p.partido_siguiente_id = $1
+        order by r.fecha desc, r.hora_fin desc
+        limit 1`,
+      [partido.siguienteId]
+    )
+    const desdeFranja = franja[0] ? despuesDelDescanso(franja[0]) : { fecha: partido.fechaInicio, hora: '08:00' }
     const rivales = await cargarParticipantes([s.localId, s.visitanteId], cliente)
     const jugadores = [...rivales.values()].flatMap(jugadoresDe)
     siguiente.programacion = await programarSiguiente(s, desdeFranja, partido, jugadores, cliente)
