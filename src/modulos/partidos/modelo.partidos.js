@@ -1,5 +1,6 @@
 import { pool } from '../../config/conexion.bd.js'
-import { DURACION_MIN, HORARIO, programar } from '../torneos/scheduler.torneos.js'
+import { DURACION_MIN, HORARIO, despuesDelDescanso, programar } from '../torneos/scheduler.torneos.js'
+import { finDeLaFaseDeZonas } from '../torneos/modelo.zonas.torneos.js'
 import { listarCanchas, listarOcupadas, reservarParaPartido, verificarDisponibilidad } from '../reservas/modelo.reservas.js'
 
 const aMinutos = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5))
@@ -46,7 +47,7 @@ export const agendaDeJugadores = async (jugadores, partidoId, desde, hasta, db) 
   return rows
 }
 
-// Primera franja libre desde `desde` (fecha y hora) que sirva para este partido, o null. Usa el scheduler
+// Primera franja libre desde `desde` (fecha y hora) que sirva para este partido, o null. Usa el scheduler (M3-BE-11)
 // con las reservas vigentes y los partidos de sus jugadores. Sólo evita superposiciones: sin descanso mínimo.
 const sugerirFranja = async (partido, { fecha, horaInicio }, db) => {
   const canchas = await listarCanchas(partido.disciplina, db)
@@ -144,7 +145,7 @@ export const programarPartido = async (partidoId, { canchaId, fecha, horaInicio 
 }
 
 // Amplía la fecha de fin de un torneo en curso y, con el período nuevo, intenta programar los partidos que habían
-// quedado sin cancha ni horario. Todo en una transacción. Devuelve { resultado, ... }:
+// quedado sin cancha ni horario (CU 3.4 · 5a). Todo en una transacción. Devuelve { resultado, ... }:
 //   'NO_ENCONTRADO' · 'ESTADO_INVALIDO' (estado) · 'FECHA_NO_POSTERIOR' (fechaFinActual)
 //   'OK' (fechaFin, programados, sinProgramar: cuántos quedaron sin lugar)
 export const ampliarFechaFin = async (torneoId, fechaFin) => {
@@ -168,17 +169,24 @@ export const ampliarFechaFin = async (torneoId, fechaFin) => {
 
     // Los que se juegan, tienen a los dos rivales y no tienen franja, en el orden del cuadro
     const { rows: pendientes } = await cliente.query(
-      `select id from partido
+      `select id, fase from partido
         where torneo_id = $1 and estado = 'PENDIENTE' and reserva_id is null and not es_bye
           and local_inscripcion_id is not null and visitante_inscripcion_id is not null
         order by ronda, posicion`,
       [torneoId],
     )
 
+    // La eliminatoria de un torneo con zonas arranca después de que termina la última zona (más el descanso)
+    const finDeZonas = pendientes.some((p) => p.fase === 'ELIMINATORIA') ? await finDeLaFaseDeZonas(torneoId, cliente) : null
+    const despuesDeZonas = finDeZonas ? despuesDelDescanso(finDeZonas) : null
+
     let programados = 0
-    for (const { id } of pendientes) {
+    for (const { id, fase } of pendientes) {
       const partido = await buscarPartido(id, cliente)
-      const franja = await sugerirFranja(partido, { fecha: partido.fechaInicio, horaInicio: HORARIO.desde }, cliente)
+      const desdeFranja = fase === 'ELIMINATORIA' && despuesDeZonas
+        ? { fecha: despuesDeZonas.fecha, horaInicio: despuesDeZonas.hora }
+        : { fecha: partido.fechaInicio, horaInicio: HORARIO.desde }
+      const franja = await sugerirFranja(partido, desdeFranja, cliente)
       if (!franja) continue
       const { resultado } = await reservarParaPartido(id, franja, cliente)
       if (resultado === 'OK') programados += 1

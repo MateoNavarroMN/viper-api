@@ -82,10 +82,10 @@ const armarZonas = (participantes) => {
   return { filasZonas, filasPosiciones, filasPartidos }
 }
 
-// Arma las filas de `partido` de un cuadro de eliminación directa. Los partidos de la primera ronda con bye ya
-// quedan FINALIZADOS con su ganador, y el ganador ya está colocado en la segunda ronda (lo hace el algoritmo).
-const armarEliminacion = (participantes) => {
-  const { rondas } = generarEliminacion(participantes)
+// Arma las filas de `partido` de unas rondas ya encadenadas (la forma de `generarEliminacion`). Sirve para el cuadro de
+// eliminación directa y para la fase eliminatoria que sale de las zonas (CU 3.9). Los partidos de la primera ronda con bye
+// ya quedan FINALIZADOS con su ganador, y el ganador ya está colocado en la segunda ronda (lo hace el algoritmo).
+export const filasDeRondas = (rondas) => {
   const ids = new Map(rondas.flatMap((r) => r.partidos.map((p) => [`${p.ronda}-${p.posicion}`, randomUUID()])))
   const filasPartidos = rondas.flatMap((r) => r.partidos.map((p) => ({
     id: ids.get(`${p.ronda}-${p.posicion}`), zonaId: null, fase: 'ELIMINATORIA', ronda: p.ronda, posicion: p.posicion,
@@ -101,7 +101,9 @@ const armarEliminacion = (participantes) => {
   return { filasZonas: [], filasPosiciones: [], filasPartidos }
 }
 
-const insertarFilas = async ({ filasZonas, filasPosiciones, filasPartidos }, torneoId, db) => {
+const armarEliminacion = (participantes) => filasDeRondas(generarEliminacion(participantes).rondas)
+
+export const insertarFilas = async ({ filasZonas, filasPosiciones, filasPartidos }, torneoId, db) => {
   if (filasZonas.length > 0) {
     await db.query(
       `insert into zona (id, torneo_id, nombre)
@@ -129,8 +131,9 @@ const insertarFilas = async ({ filasZonas, filasPosiciones, filasPartidos }, tor
 }
 
 // Programa los partidos que se juegan con el scheduler y crea las reservas de cancha (paso 5 del CU 3.4).
+// `noAntesDe` ({ fecha, hora }, opcional): ningún partido empieza antes (la eliminatoria arranca cuando terminan las zonas).
 // Devuelve los partidos que no tuvieron lugar dentro del período del torneo (flujo 5a).
-const programarPartidos = async (torneo, filasPartidos, jugadoresDe, cliente) => {
+export const programarPartidos = async (torneo, filasPartidos, jugadoresDe, cliente, { noAntesDe = null } = {}) => {
   const jugables = filasPartidos.filter((f) => !f.esBye)
   const canchas = await listarCanchas(torneo.disciplina, cliente)
   const todosLosJugadores = [...new Set([...jugadoresDe.values()].flat())]
@@ -142,6 +145,7 @@ const programarPartidos = async (torneo, filasPartidos, jugadoresDe, cliente) =>
     posicion: i + 1,
     participantes: [...new Set([f.local, f.visitante].filter(Boolean).flatMap((insc) => jugadoresDe.get(insc)))],
     dependeDe: f.dependeDe,
+    ...(noAntesDe && { noAntesDe }),
   }))
 
   const agenda = await agendaDeJugadores(todosLosJugadores, null, torneo.fechaInicio, torneo.fechaFin, cliente)

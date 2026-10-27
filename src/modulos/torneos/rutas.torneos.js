@@ -5,6 +5,7 @@ import { abrir, cancelar, cerrar, previewCierre } from './controlador.estados.to
 import { inscribir, listarDelTorneo } from './controlador.inscripciones.js'
 import { guardar as guardarCabezas, obtener as obtenerCabezas } from './controlador.cabezas.torneos.js'
 import { ampliarFin, cuadro, generar, preview as previewCuadro, regenerar } from './controlador.cuadro.torneos.js'
+import { generar as generarEliminatoria, regenerar as regenerarEliminatoria } from './controlador.eliminatoria.torneos.js'
 
 const router = Router()
 
@@ -33,6 +34,10 @@ router.post('/:id/generar-cuadro', autorizar('ORGANIZADOR'), generar)
 router.get('/:id/cuadro', cuadro)
 router.post('/:id/regenerar-cuadro', autorizar('ORGANIZADOR'), regenerar)
 router.put('/:id/fecha-fin', autorizar('ORGANIZADOR'), ampliarFin)
+
+// Fase eliminatoria de un torneo con zonas (CU 3.9)
+router.post('/:id/fase-eliminatoria', autorizar('ORGANIZADOR'), generarEliminatoria)
+router.post('/:id/fase-eliminatoria/regenerar', autorizar('ORGANIZADOR'), regenerarEliminatoria)
 
 // Inscripción. Solo JUGADOR: el Administrador no hereda este permiso.
 router.post('/:id/inscripciones', autorizar('JUGADOR'), inscribir)
