@@ -1,5 +1,6 @@
 import { pool } from '../../config/conexion.bd.js'
 import { cerrarSesionesDeUsuario } from '../autenticacion/modelo.autenticacion.js'
+import { crearRankingInicial } from '../ranking/modelo.ranking.js'
 
 // Modelo de usuarios y jugadores.
 
@@ -76,6 +77,7 @@ export const crearJugadorCompleto = async ({ dni, ...datosUsuario }) => {
     await cliente.query('begin')
     const usuario = await crearUsuario({ ...datosUsuario, rol: 'JUGADOR' }, cliente)
     const jugador = await crearJugador(usuario.id, dni, cliente)
+    await crearRankingInicial(jugador.id, cliente) // categoría inicial en Tenis y Pádel
     await cliente.query('commit')
     return { ...usuario, jugador_id: jugador.id, dni: jugador.dni }
   } catch (error) {

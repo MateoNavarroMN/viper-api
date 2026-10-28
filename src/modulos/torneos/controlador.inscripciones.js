@@ -15,10 +15,15 @@ const YA_INSCRIPTO = {
   JUGADOR: 'Ya estás inscripto en este torneo',
   COMPANERO: 'Tu compañero ya está inscripto en este torneo',
 }
-const categoriaIncompatible = ({ quien, categoriaRequerida }) =>
-  quien === 'COMPANERO'
-    ? `Categoría incompatible: tu compañero no es de la categoría ${categoriaRequerida}, que es la que pide el torneo`
-    : `Categoría incompatible: el torneo es para la categoría ${categoriaRequerida}`
+// «la categoría 6ta» o, si el torneo admite varias (Pádel), «las categorías 7ma, 6ta y 5ta»
+const textoCategorias = (nombres) =>
+  nombres.length > 1 ? `las categorías ${nombres.slice(0, -1).join(', ')} y ${nombres.at(-1)}` : `la categoría ${nombres[0]}`
+const categoriaIncompatible = ({ quien, categoriaRequerida, categoriasAdmitidas }) => {
+  const admitidas = textoCategorias(categoriasAdmitidas?.length ? categoriasAdmitidas : [categoriaRequerida])
+  return quien === 'COMPANERO'
+    ? `Categoría incompatible: tu compañero no está en ${admitidas}, que son las que admite el torneo`
+    : `Categoría incompatible: este torneo admite ${admitidas}`
+}
 
 // POST /api/torneos/:id/inscripciones
 // Cuerpo: { companeroJugadorId?, medioPago: 'EN_LINEA' | 'RECEPCION' }. En Pádel el compañero es obligatorio; en Tenis no va.
@@ -63,6 +68,7 @@ export const inscribir = async (req, res) => {
           quien: resultado.quien,
           categoriaRequerida: resultado.categoriaRequerida,
           categoriaJugador: resultado.categoriaJugador,
+          categoriasAdmitidas: resultado.categoriasAdmitidas,
         })
       default: {
         const { inscripcion, torneo } = resultado

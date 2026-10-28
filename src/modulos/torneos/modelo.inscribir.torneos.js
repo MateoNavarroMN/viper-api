@@ -1,5 +1,5 @@
 import { pool } from '../../config/conexion.bd.js'
-import { categoriaDeJugador } from './modelo.categorias.js'
+import { categoriaDeJugador, categoriasAdmitidas } from './modelo.categorias.js'
 import { bloquearTorneo, buscarTorneoPorId } from './modelo.torneos.js'
 import {
   anularInscripcionesVencidas,
@@ -40,7 +40,7 @@ const calcularVencimiento = async (torneoId, db) => {
 // si dos jugadores se inscriben a la vez por el último cupo, el segundo espera y ya ve el cupo completo.
 // Devuelve { resultado, ... }:
 //   NO_ENCONTRADO · NO_ABIERTO (estado) · SIN_COMPANERO · CON_COMPANERO · COMPANERO_INVALIDO · CUPO_COMPLETO · YA_INSCRIPTO (quien: 'JUGADOR' | 'COMPANERO')
-//   CATEGORIA_INCOMPATIBLE (quien, categoriaRequerida, categoriaJugador) · OK (inscripcion, torneo)
+//   CATEGORIA_INCOMPATIBLE (quien, categoriaRequerida, categoriaJugador, categoriasAdmitidas) · OK (inscripcion, torneo)
 export const inscribirEnTorneo = async ({ torneoId, jugadorId, companeroJugadorId = null }) => {
   const cliente = await pool.connect()
   const terminar = async (respuesta) => {
@@ -76,15 +76,17 @@ export const inscribirEnTorneo = async ({ torneoId, jugadorId, companeroJugadorI
       if (await buscarInscripcionActivaDeJugador(torneoId, id, cliente)) return await terminar({ resultado: 'YA_INSCRIPTO', quien })
     }
 
-    // Misma categoría que el torneo (en Pádel, los dos; Anexo D, punto 7)
+    // Categoría compatible con la del torneo: la misma en Tenis; en Pádel también una menos y una más, y se mira a cada integrante
+    const admitidas = await categoriasAdmitidas(torneo.disciplina, torneo.categoriaId, cliente)
     for (const { quien, id } of integrantes) {
       const categoria = await categoriaDeJugador(id, torneo.disciplina, cliente)
-      if (categoria?.id !== torneo.categoriaId) {
+      if (!admitidas.some((c) => c.id === categoria?.id)) {
         return await terminar({
           resultado: 'CATEGORIA_INCOMPATIBLE',
           quien,
           categoriaRequerida: torneo.categoria,
           categoriaJugador: categoria?.nombre ?? null,
+          categoriasAdmitidas: admitidas.map((c) => c.nombre),
         })
       }
     }
