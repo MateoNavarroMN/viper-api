@@ -18,7 +18,9 @@ import rutasMisInscripciones from './modulos/torneos/rutas.mis.inscripciones.js'
 import rutasInscripciones from './modulos/torneos/rutas.inscripciones.js'
 import rutasCanchas from './modulos/canchas/rutas.canchas.js'
 import rutasPartidos from './modulos/partidos/rutas.partidos.js'
+import rutasZonas from './modulos/torneos/rutas.zonas.torneos.js'
 import rutasRanking from './modulos/ranking/rutas.ranking.js'
+import rutasCalendario from './modulos/calendario/rutas.calendario.js'
 
 const app = express()
 
@@ -59,7 +61,9 @@ app.use('/api/jugadores', rutasJugadores)
 app.use('/api/categorias', rutasCategorias)
 app.use('/api/canchas', rutasCanchas)
 app.use('/api/partidos', rutasPartidos)
+app.use('/api/zonas', rutasZonas)
 app.use('/api/ranking', rutasRanking)
+app.use('/api/calendario', rutasCalendario)
 
 // Ruta no encontrada
 app.use((req, res) => {

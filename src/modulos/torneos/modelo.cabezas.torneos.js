@@ -65,6 +65,8 @@ const armar = (torneo, filas) => ({
 })
 
 const ESTADOS_QUE_ADMITEN = ['INSCRIPCIONES_ABIERTAS', 'INSCRIPCIONES_CERRADAS']
+// Con el cuadro generado ya no se configuran, pero se pueden consultar quiénes quedaron
+const ESTADOS_DE_SOLO_LECTURA = ['EN_CURSO', 'FINALIZADO', 'ARCHIVADO']
 
 // Valida el torneo para la etapa. Devuelve null si está bien o { resultado, ... } con el motivo.
 const validarEtapa = (torneo, pagadas) => {
@@ -74,13 +76,15 @@ const validarEtapa = (torneo, pagadas) => {
   return null
 }
 
-// GET: pagadas con sus puntos y cuáles son cabeza de serie.
+// GET: pagadas con sus puntos y cuáles son cabeza de serie. `editable` es false cuando el torneo ya tiene el cuadro generado
+// (En curso, Finalizado o Archivado): solo se consulta quiénes quedaron.
 // Devuelve { resultado: 'NO_ENCONTRADO' | 'ESTADO_INVALIDO' | 'INSUFICIENTES' | 'OK', ... }
 export const obtenerCabezasDeSerie = async (torneoId) => {
   const torneo = await buscarTorneoPorId(torneoId)
   if (!torneo || torneo.estado === 'PLANIFICADO') return { resultado: 'NO_ENCONTRADO' }
   const filas = await listarPagadas(torneoId, pool)
-  return validarEtapa(torneo, filas.length) ?? { resultado: 'OK', ...armar(torneo, filas) }
+  if (ESTADOS_DE_SOLO_LECTURA.includes(torneo.estado)) return { resultado: 'OK', editable: false, ...armar(torneo, filas) }
+  return validarEtapa(torneo, filas.length) ?? { resultado: 'OK', editable: true, ...armar(torneo, filas) }
 }
 
 // Marca o quita una cabeza de serie (solo si la inscripción está ACTIVA y PAGADA). Devuelve si cambió algo.
