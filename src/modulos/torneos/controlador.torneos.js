@@ -1,4 +1,4 @@
-import { buscarCategoriaPorId } from './modelo.categorias.js'
+import { buscarCategoriaPorId, categoriasAdmitidas } from './modelo.categorias.js'
 import { buscarTorneoPorId, crearTorneo, editarTorneoPlanificado, listarTorneos } from './modelo.torneos.js'
 import { anularInscripcionesVencidas, buscarInscripcionActivaDeJugador } from './modelo.inscripciones.js'
 import { VISTAS, accionesPermitidas, estadosVisibles } from './acciones.torneos.js'
@@ -104,6 +104,8 @@ export const obtener = async (req, res) => {
     }
 
     const respuesta = conAcciones(torneo, req.usuario.rol)
+    // Categorías que pueden inscribirse (en Pádel, la del torneo y las dos vecinas): la pantalla de inscripción las usa para avisar antes de confirmar
+    respuesta.categoriasAdmitidas = (await categoriasAdmitidas(torneo.disciplina, torneo.categoriaId)).map(({ id, nombre }) => ({ id, nombre }))
 
     // Para el jugador se agrega su inscripción activa (como titular o compañero), así la ficha
     // muestra «Ya estás inscripto» en lugar del botón (M3-FE-04). Una con el plazo de pago vencido

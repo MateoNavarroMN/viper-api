@@ -37,3 +37,13 @@ export const categoriaDeJugador = async (jugadorId, disciplina, db = pool) => {
   )
   return rows[0] ?? null
 }
+
+// Categorías que pueden inscribirse a un torneo de `categoriaId`, de menor a mayor. En Tenis solo la misma; en Pádel también la
+// anterior y la siguiente (una categoría menos y una más), y en cada pareja los dos integrantes se evalúan por separado.
+export const categoriasAdmitidas = async (disciplina, categoriaId, db = pool) => {
+  const todas = await listarCategorias(disciplina, db)
+  const posicion = todas.findIndex((c) => c.id === categoriaId)
+  if (posicion === -1) return []
+  const holgura = disciplina === 'PADEL' ? 1 : 0
+  return todas.slice(Math.max(0, posicion - holgura), posicion + holgura + 1)
+}

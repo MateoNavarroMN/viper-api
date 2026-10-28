@@ -11,14 +11,29 @@ import { agendaDeJugadores } from './modelo.partidos.js'
 // transacción con el torneo bloqueado: los sets, el ganador, la tabla de la zona o el avance en el cuadro, los puntos
 // y el cierre del torneo se guardan juntos o no se guarda nada. Lo que no depende de la base (que el marcador sea válido) lo valida antes el controller.
 //
-// Puntos (reglas de `regla_puntuacion`, valores de ejemplo hasta confirmarlos con el club):
+// Puntos (reglas de `regla_puntuacion`):
 // Los puntos se dan partido a partido, según se gane o se pierda, sin esperar a que el jugador quede eliminado:
 //   - Zona: el que gana recibe VICTORIA_EN_ZONA y el que pierde, PARTICIPACION. Al cerrarse la zona, los que clasifican
-//     reciben además CLASIFICADO_DE_ZONA.
-//   - Eliminatoria: el que gana recibe los puntos de la instancia que acaba de ganar (CUARTOS, SEMIFINAL…) y el que
-//     pierde, PARTICIPACION. Quien gana la final recibe además CAMPEON.
+//     reciben además CLASIFICADO_DE_ZONA. (Valores de ejemplo hasta confirmarlos con el club.)
+//   - Eliminatoria de Pádel: el que gana recibe los puntos de la instancia que acaba de ganar (CUARTOS, SEMIFINAL…) y el que
+//     pierde, PARTICIPACION. Quien gana la final recibe además CAMPEON. (Valores de ejemplo: Pádel tendrá su escala.)
+//   - Eliminatoria de Tenis: escala ATP 500 por ronda alcanzada. La regla de cada instancia es el total que suma quien llega
+//     hasta ahí (CAMPEON 500, FINAL 330, SEMIFINAL 200, CUARTOS 100, OCTAVOS 50, el resto 0). Quien gana llega a la ronda
+//     siguiente y quien pierde queda en la de este partido; cada uno recibe lo que le falta para ese total (ver
+//     `otorgarPuntos`), así el torneo le suma lo mismo con o sin byes y no hay PARTICIPACION extra.
 // Todos los movimientos quedan atados al partido (`movimiento_puntos.partido_id`), así se pueden revertir cuando se
 // corrige el resultado (CU 3.6 · 6a).
+
+// La ronda a la que llega quien gana un partido eliminatorio (quien gana la final es CAMPEON)
+const RONDA_SIGUIENTE = {
+  SESENTAYCUATROAVOS: 'TREINTAIDOSAVOS',
+  TREINTAIDOSAVOS: 'DIECISEISAVOS',
+  DIECISEISAVOS: 'OCTAVOS',
+  OCTAVOS: 'CUARTOS',
+  CUARTOS: 'SEMIFINAL',
+  SEMIFINAL: 'FINAL',
+  FINAL: 'CAMPEON',
+}
 
 const jugadoresDe = (participante) => [participante.titular.id, participante.companero?.id].filter(Boolean)
 
@@ -173,9 +188,11 @@ const resolverPartido = async (cliente, partido, { ganadorId, perdedorId, puntos
   const partidoId = partido.id
   const participantes = await cargarParticipantes([partido.localId, partido.visitanteId], cliente)
   const puntosOtorgados = []
-  const dar = async (instancia, inscripcionIds) => {
+  // `porRonda`: la regla es el total de la ronda alcanzada y se otorga solo lo que falta (Tenis, eliminatoria)
+  const dar = async (instancia, inscripcionIds, porRonda = false) => {
     const jugadorIds = inscripcionIds.flatMap((id) => jugadoresDe(participantes.get(id)))
-    const otorgados = await otorgarPuntos({ partidoId, disciplina: partido.disciplina, instancia, jugadorIds }, cliente)
+    const porRondaEnTorneo = porRonda ? partido.torneoId : null
+    const otorgados = await otorgarPuntos({ partidoId, disciplina: partido.disciplina, instancia, jugadorIds, porRondaEnTorneo }, cliente)
     puntosOtorgados.push(...otorgados.map((o) => ({ ...o, instancia })))
   }
   const efectos = { encadenados: [], torneoFinalizado: false }
@@ -210,7 +227,10 @@ const resolverPartido = async (cliente, partido, { ganadorId, perdedorId, puntos
     }
   } else {
     const esFinal = partido.instancia === 'FINAL'
-    if (ganadorId) {
+    if (ganadorId && partido.disciplina === 'TENIS') {
+      await dar(RONDA_SIGUIENTE[partido.instancia], [ganadorId], true)
+      if (puntosAlPerdedor) await dar(partido.instancia, [perdedorId], true)
+    } else if (ganadorId) {
       await dar(partido.instancia, [ganadorId])
       if (puntosAlPerdedor) await dar('PARTICIPACION', [perdedorId])
       if (esFinal) await dar('CAMPEON', [ganadorId])
@@ -392,8 +412,8 @@ export const corregirResultado = (partidoId, sets, ganador) =>
 // POST wo. Registra la baja de una pareja o jugador (CU 3.7): el partido queda en W.O. sin jugarse.
 //   ausente: 'LOCAL' | 'VISITANTE' | 'AMBOS'. El que no falta gana por W.O.; con AMBOS (doble baja) no hay ganador.
 //   motivo:  texto que se guarda en `partido.motivo_wo`: 'RETIRO' o 'RETIRO: se lesionó' si hay detalle.
-// Puntos: el que gana recibe los de victoria de siempre (zona: VICTORIA_EN_ZONA; eliminatoria: los de la instancia) y el
-// que faltó no recibe nada. Una zona cuenta el W.O. como 6-0 6-0 en la tabla; en una doble baja no suma a nadie. En la
+// Puntos: el que gana recibe los de victoria de siempre (zona: VICTORIA_EN_ZONA; eliminatoria: los de la instancia, o en Tenis
+// lo que le falta para la ronda a la que llega) y el que faltó no recibe nada. Una zona cuenta el W.O. como 6-0 6-0 en la tabla; en una doble baja no suma a nadie. En la
 // eliminatoria el ganador avanza y, con doble baja, el rival del partido siguiente avanza por W.O. Se cancela la reserva
 // del partido, que libera la cancha.
 // Devuelve { resultado: 'NO_ENCONTRADO' | 'YA_RESUELTO' | 'NO_ADMITE' | 'OK', ... }. Con 'OK': partido (con `ausente`, `motivo`

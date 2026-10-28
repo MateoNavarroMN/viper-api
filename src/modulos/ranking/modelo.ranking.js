@@ -42,6 +42,19 @@ const obtenerOCrearRanking = async (jugadorId, disciplina, db) => {
   return rows[0]
 }
 
+// Al registrarse, el jugador queda con la categoría inicial (la de menor puntaje) y 0 puntos en cada disciplina, así ya tiene
+// categoría para inscribirse a un torneo. No pisa lo que ya exista.
+export const crearRankingInicial = async (jugadorId, db = pool) => {
+  await db.query(
+    `insert into ranking_disciplina (jugador_id, disciplina, categoria_id)
+     select $1, c.disciplina, c.id
+       from categoria_tecnica c
+      where c.puntos_minimos = (select min(c2.puntos_minimos) from categoria_tecnica c2 where c2.disciplina = c.disciplina)
+     on conflict (jugador_id, disciplina) do nothing`,
+    [jugadorId]
+  )
+}
+
 // Los puntos que un ranking ya tenía y no vienen de ningún movimiento (los de partida de un jugador, cargados a mano o de
 // una carga inicial) se registran como un movimiento más, con la regla PARTICIPACION como etiqueta. Se hace justo antes de
 // cambiar los movimientos de ese ranking: así el total, que siempre se recalcula como la suma de sus movimientos, no los
@@ -91,12 +104,26 @@ const resumir = (r) => ({
   cambioCategoria: r.categoriaId !== r.categoriaAntes,
 })
 
+// Lo que el jugador ya sumó en la fase eliminatoria de un torneo (movimientos vigentes de sus partidos de eliminatoria).
+const puntosEnEliminatoria = async (rankingId, torneoId, db) => {
+  const { rows } = await db.query(
+    `select coalesce(sum(m.puntos), 0)::int as suma
+       from movimiento_puntos m join partido p on p.id = m.partido_id
+      where m.ranking_id = $1 and p.torneo_id = $2 and p.fase = 'ELIMINATORIA' and not m.revertido`,
+    [rankingId, torneoId]
+  )
+  return rows[0].suma
+}
+
 // Otorga a cada jugador los puntos que la regla vigente da a esa instancia y recalcula su ranking y su categoría.
 // `jugadorIds` son todos los que reciben los puntos: en Pádel, los dos integrantes de la pareja.
 // `partidoId` puede ser null (por ejemplo, puntos por participar). Si ya hay un movimiento vigente de ese partido,
 // jugador e instancia, no se repite, así volver a llamar con lo mismo no duplica puntos.
+// `porRondaEnTorneo` (id de un torneo) es para la escala por ronda alcanzada del Tenis (ATP 500): ahí la regla de la
+// instancia no es un extra sino el total que suma quien llega hasta esa ronda, así que cada jugador recibe solo la
+// diferencia con lo que ya sumó en la eliminatoria de ese torneo (y nada si no hay diferencia).
 // Devuelve [{ jugadorId, disciplina, puntos, puntosTotales, categoriaId, cambioCategoria }] (vacío si no hay regla vigente).
-export const otorgarPuntos = async ({ partidoId = null, disciplina, instancia, jugadorIds }, db = pool) => {
+export const otorgarPuntos = async ({ partidoId = null, disciplina, instancia, jugadorIds, porRondaEnTorneo = null }, db = pool) => {
   const regla = await buscarRegla(disciplina, instancia, db)
   if (!regla) return []
 
@@ -104,19 +131,22 @@ export const otorgarPuntos = async ({ partidoId = null, disciplina, instancia, j
   for (const jugadorId of [...new Set(jugadorIds)]) {
     const ranking = await obtenerOCrearRanking(jugadorId, disciplina, db)
     await conciliar([ranking.id], db)
+    const puntos = porRondaEnTorneo ? regla.puntos - (await puntosEnEliminatoria(ranking.id, porRondaEnTorneo, db)) : regla.puntos
+    if (porRondaEnTorneo && puntos <= 0) continue
     const { rowCount } = await db.query(
       `insert into movimiento_puntos (ranking_id, regla_id, partido_id, puntos)
        select $1, $2, $3, $4
         where not exists (select 1 from movimiento_puntos m
                            where m.ranking_id = $1 and m.regla_id = $2 and m.partido_id is not distinct from $3 and not m.revertido)`,
-      [ranking.id, regla.id, partidoId, regla.puntos]
+      [ranking.id, regla.id, partidoId, puntos]
     )
-    if (rowCount > 0) otorgados.push({ jugadorId, rankingId: ranking.id })
+    if (rowCount > 0) otorgados.push({ jugadorId, rankingId: ranking.id, puntos })
   }
   if (otorgados.length === 0) return []
 
   const recalculados = await recalcularRankings('r.id = any($1)', [otorgados.map((o) => o.rankingId)], db)
-  return recalculados.map((r) => ({ ...resumir(r), puntos: regla.puntos }))
+  const puntosDe = new Map(otorgados.map((o) => [o.rankingId, o.puntos]))
+  return recalculados.map((r) => ({ ...resumir(r), puntos: puntosDe.get(r.id) }))
 }
 
 // Anula los movimientos vigentes de un partido (al corregir su resultado, CU 3.6 · BE-19) y deja los rankings de esos
@@ -171,7 +201,8 @@ export const recalcularRanking = (disciplina, db = pool) => conciliarYRecalcular
 export const recalcularCategoria = (jugadorId, disciplina = null, db = pool) =>
   conciliarYRecalcular('r.jugador_id = $1 and ($2::disciplina is null or r.disciplina = $2::disciplina)', [jugadorId, disciplina], db)
 
-// Ranking de una disciplina, de más a menos puntos. Los empatados comparten posición (1, 2, 2, 4). `categoriaId`
+// Ranking de una disciplina, de más a menos puntos. Solo cuentas de jugador: el personal del club (organizador,
+// recepcionista, administrador) no figura aunque tenga un perfil de jugador. Los empatados comparten posición (1, 2, 2, 4). `categoriaId`
 // filtra por categoría técnica: la posición que se muestra es la de esa categoría.
 export const listarRanking = async (disciplina, { categoriaId = null } = {}, db = pool) => {
   const { rows } = await db.query(
@@ -180,7 +211,7 @@ export const listarRanking = async (disciplina, { categoriaId = null } = {}, db 
             c.id as "categoriaId", c.nombre_categoria as categoria
        from ranking_disciplina r
        join jugador j on j.id = r.jugador_id
-       join usuario u on u.id = j.usuario_id
+       join usuario u on u.id = j.usuario_id and u.rol = 'JUGADOR'
        join categoria_tecnica c on c.id = r.categoria_id
       where r.disciplina = $1 and ($2::uuid is null or r.categoria_id = $2::uuid)
       order by r.puntos_totales desc, u.apellido, u.nombre, j.id`,
