@@ -3,7 +3,7 @@ import { pool } from '../../config/conexion.bd.js'
 // Socios del club (CU 4.1 · RF-14). Cada función recibe como último parámetro opcional `db`: el pool o un cliente
 // con una transacción abierta (el alta de un socio y sus categorías tienen que guardarse todo junto).
 
-const COLUMNAS = 'id, jugador_id as "jugadorId", fecha_alta as "fechaAlta", estado'
+const COLUMNAS = 'id, jugador_id as "jugadorId", fecha_alta::text as "fechaAlta", estado'
 
 export const buscarSocioPorId = async (id, db = pool) => {
   const { rows } = await db.query(`select ${COLUMNAS} from socio where id = $1`, [id])
