@@ -1,4 +1,4 @@
-import { buscarJugadorPorDni } from './modelo.jugadores.js'
+import { buscarJugadorPorDni, buscarJugadoresParaPersonal } from './modelo.jugadores.js'
 
 // GET /api/jugadores/buscar?dni=
 // Devuelve id, nombre, apellido y categoría por disciplina. Nunca el correo ni el teléfono.
@@ -16,5 +16,20 @@ export const buscar = async (req, res) => {
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo buscar al jugador' })
+  }
+}
+
+// GET /api/jugadores/consulta?q=
+// Búsqueda del personal por DNI o correo. Sin resultados responde 200 con la lista vacía.
+export const consultar = async (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+  if (q.length < 3) return res.status(400).json({ mensaje: 'Ingresá al menos 3 caracteres', campo: 'q' })
+
+  try {
+    const jugadores = await buscarJugadoresParaPersonal(q)
+    return res.status(200).json({ jugadores })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo buscar jugadores' })
   }
 }
