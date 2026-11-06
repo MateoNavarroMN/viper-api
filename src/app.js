@@ -21,6 +21,7 @@ import rutasPartidos from './modulos/partidos/rutas.partidos.js'
 import rutasZonas from './modulos/torneos/rutas.zonas.torneos.js'
 import rutasRanking from './modulos/ranking/rutas.ranking.js'
 import rutasCalendario from './modulos/calendario/rutas.calendario.js'
+import rutasSocios from './modulos/socios/rutas.socios.js'
 
 const app = express()
 
@@ -64,6 +65,7 @@ app.use('/api/partidos', rutasPartidos)
 app.use('/api/zonas', rutasZonas)
 app.use('/api/ranking', rutasRanking)
 app.use('/api/calendario', rutasCalendario)
+app.use('/api/socios', rutasSocios)
 
 // Ruta no encontrada
 app.use((req, res) => {
