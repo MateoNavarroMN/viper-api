@@ -3,7 +3,7 @@ import { altaSocio } from './modelo.alta.socios.js'
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 // Cómo responde cada error de categoría de `asignarCategoria`
-const ERRORES_CATEGORIA = {
+export const ERRORES_CATEGORIA = {
   CATEGORIA_INEXISTENTE: [400, 'La categoría no existe'],
   CATEGORIA_OTRA_DISCIPLINA: [400, 'La categoría no corresponde a la disciplina'],
   CATEGORIA_INFERIOR_CON_PUNTOS: [409, 'El jugador ya tiene puntos de torneos que lo ubican en una categoría superior'],
