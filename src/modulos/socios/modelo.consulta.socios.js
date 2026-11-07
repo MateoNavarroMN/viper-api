@@ -2,6 +2,7 @@ import { pool } from '../../config/conexion.bd.js'
 import { sinTildes } from '../usuarios/modelo.consulta.usuarios.js'
 import { categoriaDeJugador } from '../torneos/modelo.categorias.js'
 import { SQL_CUOTA_VENCIDA } from '../cuotas/modelo.cuotas.js'
+import { CATEGORIA_ACTUAL } from '../jugadores/modelo.jugadores.js'
 
 // Consulta de socios (CU 4.1 · paso 2, A3). SQL crudo; las reglas las decide el controlador.
 
@@ -17,7 +18,8 @@ const TIENE_CUOTA_VENCIDA = `exists (select 1 from cuota_mensual c where c.socio
 
 const COLUMNAS = `s.id, s.jugador_id as "jugadorId", u.nombre, u.apellido, j.dni,
        s.fecha_alta::text as "fechaAlta", s.estado,
-       case when ${TIENE_CUOTA_VENCIDA} then 'ADEUDADO' else 'AL_DIA' end as "situacionCuotas"`
+       case when ${TIENE_CUOTA_VENCIDA} then 'ADEUDADO' else 'AL_DIA' end as "situacionCuotas",
+       json_build_object('TENIS', ${CATEGORIA_ACTUAL('TENIS')}, 'PADEL', ${CATEGORIA_ACTUAL('PADEL')}) as categorias`
 
 const DESDE = `from socio s
        join jugador j on j.id = s.jugador_id

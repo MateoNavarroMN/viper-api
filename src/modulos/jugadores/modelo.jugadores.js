@@ -29,7 +29,7 @@ export const buscarJugadorPorDni = async (dni, db = pool) => {
 // correo que empiece con lo escrito, sin distinguir mayúsculas. Solo cuentas con rol JUGADOR. Nunca devuelve el hash de
 // la contraseña. `socio` es null si no es socio, o { id, estado } si lo es (ACTIVO o BAJA). `categorias` es la categoría
 // actual en cada disciplina (la de su ranking o, si nunca jugó, la inicial), igual que `categoriaDeJugador`.
-const CATEGORIA_ACTUAL = (disciplina) => `(
+export const CATEGORIA_ACTUAL = (disciplina) => `(
   select json_build_object('id', c.id, 'nombre', c.nombre_categoria)
     from categoria_tecnica c
     left join ranking_disciplina r on r.categoria_id = c.id and r.jugador_id = j.id
