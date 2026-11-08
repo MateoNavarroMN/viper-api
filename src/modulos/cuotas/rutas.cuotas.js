@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { autenticar, autorizar } from '../../middlewares/autenticacion.middleware.js'
 import { listar } from './controlador.consulta.cuotas.js'
 import { generar, previsualizar } from './controlador.generacion.cuotas.js'
+import { registrarPago } from './controlador.pago.cuotas.js'
 
 const router = Router()
 
@@ -9,5 +10,6 @@ const router = Router()
 router.get('/', autenticar, autorizar('RECEPCIONISTA'), listar)
 router.get('/generar/preview', autenticar, autorizar('RECEPCIONISTA'), previsualizar)
 router.post('/generar', autenticar, autorizar('RECEPCIONISTA'), generar)
+router.post('/:id/pago', autenticar, autorizar('RECEPCIONISTA'), registrarPago)
 
 export default router
