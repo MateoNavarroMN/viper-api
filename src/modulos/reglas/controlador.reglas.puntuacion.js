@@ -1,4 +1,4 @@
-import { listarInstancias, listarReglasVigentes, modificarPuntosOtorgados } from './modelo.reglas.puntuacion.js'
+import { listarHistorialRegla, listarInstancias, listarReglasVigentes, modificarPuntosOtorgados } from './modelo.reglas.puntuacion.js'
 
 const DISCIPLINAS = ['TENIS', 'PADEL']
 const MAXIMO_PUNTOS = 1000000
@@ -61,5 +61,26 @@ export const modificar = async (req, res) => {
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo modificar la regla de puntuación' })
+  }
+}
+
+// GET /api/reglas-puntuacion/:disciplina/:instancia/historial  (CU 4.3 · A1, Organizador y Administrador)
+// Responde { disciplina, instancia, historial: [{ puntos, vigenteDesde, vigente }] }, de la regla más nueva a la más vieja.
+// Es de solo lectura. La regla que rige hoy viene con `vigente: true`.
+export const historial = async (req, res) => {
+  const disciplina = leerDisciplina(req.params.disciplina)
+  if (!DISCIPLINAS.includes(disciplina)) {
+    return res.status(400).json({ mensaje: 'Disciplina o instancia no válida', campo: 'disciplina' })
+  }
+
+  const instancia = String(req.params.instancia ?? '').toUpperCase()
+  try {
+    if (!(await listarInstancias()).includes(instancia)) {
+      return res.status(400).json({ mensaje: 'Disciplina o instancia no válida', campo: 'instancia' })
+    }
+    return res.status(200).json({ disciplina, instancia, historial: await listarHistorialRegla(disciplina, instancia) })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo obtener el historial de la regla' })
   }
 }
