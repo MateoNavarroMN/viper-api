@@ -24,6 +24,7 @@ import rutasCalendario from './modulos/calendario/rutas.calendario.js'
 import rutasSocios from './modulos/socios/rutas.socios.js'
 import rutasCuotas from './modulos/cuotas/rutas.cuotas.js'
 import rutasMisCuotas from './modulos/cuotas/rutas.mis.cuotas.js'
+import rutasReglasPuntuacion from './modulos/reglas/rutas.reglas.puntuacion.js'
 
 const app = express()
 
@@ -70,6 +71,7 @@ app.use('/api/calendario', rutasCalendario)
 app.use('/api/socios', rutasSocios)
 app.use('/api/cuotas', rutasCuotas)
 app.use('/api/mis-cuotas', rutasMisCuotas)
+app.use('/api/reglas-puntuacion', rutasReglasPuntuacion)
 
 // Ruta no encontrada
 app.use((req, res) => {
