@@ -38,6 +38,22 @@ export const listarReglasVigentes = async (disciplina, db = pool) => {
   return rows
 }
 
+// Todas las reglas que tuvo una instancia, de la más nueva a la más vieja (CU 4.3 · A1, solo lectura).
+// `vigente` es true en la que rige hoy: la más reciente cuya fecha de vigencia ya llegó.
+// Una instancia que nunca tuvo una regla devuelve una lista vacía.
+export const listarHistorialRegla = async (disciplina, instancia, db = pool) => {
+  const { rows } = await db.query(
+    `select puntos_otorgados as puntos, vigente_desde::text as "vigenteDesde",
+            coalesce(vigente_desde = (select max(vigente_desde) from regla_puntuacion
+                                       where disciplina = $1 and instancia::text = $2 and vigente_desde <= current_date), false) as vigente
+       from regla_puntuacion
+      where disciplina = $1 and instancia::text = $2
+      order by vigente_desde desc`,
+    [disciplina, instancia]
+  )
+  return rows
+}
+
 // Cambia los puntos de una instancia. Devuelve:
 //   { resultado: 'SIN_CAMBIOS', puntos }                           si ya vale eso (7b)
 //   { resultado: 'OK', regla, anterior, reemplazada }             regla es la nueva; reemplazada es true si ya había una de hoy (8a)
