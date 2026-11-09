@@ -278,3 +278,83 @@ export const listarRanking = async (disciplina, { categoriaId = null } = {}, db 
     categoria: { id: f.categoriaId, nombre: f.categoria },
   }))
 }
+
+// Detalle de un jugador en el ranking de una disciplina (CU 4.4 · pasos 7 y 8, solo lectura): sus puntos, su posición, su
+// categoría con el rango que la define y el historial de movimientos, del más nuevo al más viejo. Devuelve null si el
+// jugador no figura en ese ranking (o es personal del club, que tampoco aparece en `listarRanking`).
+//   - Los movimientos revertidos vienen con `revertido: true` y no suman a `puntosTotales`.
+//   - Los que no tienen partido (ajuste de categoría de un socio, puntos de partida) salen con la instancia 'AJUSTE'.
+//   - Si el jugador tiene puntos que ningún movimiento explica (cargados a mano), se agrega al final un 'AJUSTE' sin fecha
+//     por la diferencia, así la suma de los movimientos no revertidos siempre coincide con `puntosTotales`.
+//   - De cada partido se informa el torneo y los rivales (solo nombre y apellido). Los puntos de CLASIFICADO_DE_ZONA se dan
+//     con el último partido de la zona pero dependen de todos, así que ese movimiento no muestra rivales.
+// No devuelve correo, teléfono ni DNI.
+export const obtenerDetalleRanking = async (disciplina, jugadorId, db = pool) => {
+  const { rows: filas } = await db.query(
+    `select * from (
+       select rank() over (order by r.puntos_totales desc)::int as posicion, r.id as "rankingId", j.id as "jugadorId",
+              u.nombre, u.apellido, r.puntos_totales as "puntosTotales",
+              c.id as "categoriaId", c.nombre_categoria as categoria, c.puntos_minimos as "puntosMinimos", c.puntos_maximos as "puntosMaximos"
+         from ranking_disciplina r
+         join jugador j on j.id = r.jugador_id
+         join usuario u on u.id = j.usuario_id and u.rol = 'JUGADOR'
+         join categoria_tecnica c on c.id = r.categoria_id
+        where r.disciplina = $1
+     ) t
+      where t."jugadorId" = $2`,
+    [disciplina, jugadorId]
+  )
+  const r = filas[0]
+  if (!r) return null
+
+  const { rows } = await db.query(
+    `select m.id, m.fecha, m.puntos, m.revertido, g.instancia::text as instancia, p.id as "partidoId",
+            t.id as "torneoId", t.nombre as torneo, coalesce(rv.rivales, '[]'::json) as rivales
+       from movimiento_puntos m
+       join regla_puntuacion g on g.id = m.regla_id
+       left join partido p on p.id = m.partido_id
+       left join torneo t on t.id = p.torneo_id
+       left join inscripcion il on il.id = p.local_inscripcion_id
+       left join lateral (
+         select json_agg(json_build_object('nombre', ur.nombre, 'apellido', ur.apellido)
+                         order by (jr.id = ri.titular_jugador_id) desc, ur.apellido, ur.nombre) as rivales
+           from inscripcion ri
+           join jugador jr on jr.id in (ri.titular_jugador_id, ri.companero_jugador_id)
+           join usuario ur on ur.id = jr.usuario_id
+          where ri.id = case when $2 in (il.titular_jugador_id, il.companero_jugador_id)
+                             then p.visitante_inscripcion_id else p.local_inscripcion_id end
+       ) rv on true
+      where m.ranking_id = $1
+      order by m.fecha desc, m.id`,
+    [r.rankingId, jugadorId]
+  )
+
+  const movimientos = rows.map((m) => ({
+    id: m.id,
+    fecha: m.fecha,
+    instancia: m.partidoId ? m.instancia : 'AJUSTE',
+    puntos: m.puntos,
+    revertido: m.revertido,
+    partido: m.partidoId
+      ? {
+          id: m.partidoId,
+          torneo: { id: m.torneoId, nombre: m.torneo },
+          rivales: m.instancia === 'CLASIFICADO_DE_ZONA' ? [] : m.rivales,
+        }
+      : null,
+  }))
+
+  const suma = movimientos.filter((m) => !m.revertido).reduce((total, m) => total + m.puntos, 0)
+  if (r.puntosTotales > suma) {
+    movimientos.push({ id: null, fecha: null, instancia: 'AJUSTE', puntos: r.puntosTotales - suma, revertido: false, partido: null })
+  }
+
+  return {
+    disciplina,
+    jugador: { id: r.jugadorId, nombre: r.nombre, apellido: r.apellido },
+    posicion: r.posicion,
+    puntosTotales: r.puntosTotales,
+    categoria: { id: r.categoriaId, nombre: r.categoria, puntosMinimos: r.puntosMinimos, puntosMaximos: r.puntosMaximos },
+    movimientos,
+  }
+}
