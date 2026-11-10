@@ -17,10 +17,11 @@ import { agendaDeJugadores } from './modelo.partidos.js'
 //     reciben además CLASIFICADO_DE_ZONA. (Valores de ejemplo hasta confirmarlos con el club.)
 //   - Eliminatoria de Pádel: el que gana recibe los puntos de la instancia que acaba de ganar (CUARTOS, SEMIFINAL…) y el que
 //     pierde, PARTICIPACION. Quien gana la final recibe además CAMPEON. (Valores de ejemplo: Pádel tendrá su escala.)
-//   - Eliminatoria de Tenis: escala ATP 500 por ronda alcanzada. La regla de cada instancia es el total que suma quien llega
-//     hasta ahí (CAMPEON 500, FINAL 330, SEMIFINAL 200, CUARTOS 100, OCTAVOS 50, el resto 0). Quien gana llega a la ronda
-//     siguiente y quien pierde queda en la de este partido; cada uno recibe lo que le falta para ese total (ver
-//     `otorgarPuntos`), así el torneo le suma lo mismo con o sin byes y no hay PARTICIPACION extra.
+//   - Eliminatoria de Tenis: escala por ronda alcanzada (tipo ATP 500). La regla de cada instancia es el total que suma quien
+//     llega hasta ahí (al inicio: CAMPEON 500, FINAL 330, SEMIFINAL 200, CUARTOS 100, OCTAVOS 50, el resto 0; hoy se editan
+//     en Reglas de puntuación). Quien gana llega a la ronda siguiente y quien pierde queda en la de este partido; cada uno
+//     recibe lo que le falta para ese total (ver `otorgarPuntos`), así el torneo le suma lo mismo con o sin byes y no hay
+//     PARTICIPACION extra.
 // Todos los movimientos quedan atados al partido (`movimiento_puntos.partido_id`), así se pueden revertir cuando se
 // corrige el resultado (CU 3.6 · 6a).
 

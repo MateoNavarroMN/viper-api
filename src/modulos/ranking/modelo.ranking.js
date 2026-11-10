@@ -201,9 +201,10 @@ export const recalcularRanking = (disciplina, db = pool) => conciliarYRecalcular
 export const recalcularCategoria = (jugadorId, disciplina = null, db = pool) =>
   conciliarYRecalcular('r.jugador_id = $1 and ($2::disciplina is null or r.disciplina = $2::disciplina)', [jugadorId, disciplina], db)
 
+
 // Ubica a un jugador en una categoría técnica (CU 4.1 · pasos 7 y 10, A1). La categoría de `ranking_disciplina` siempre
 // sale de los puntos (`recalcularCategoria`), así que «asignar» es poner al jugador dentro del rango de esa categoría:
-//  - si sus puntos ya caen en ese rango, no hace nada;
+//  - si sus puntos ya lo ubican en esa categoría (según el recálculo), no hace nada;
 //  - si no, registra un movimiento de ajuste (sin partido, con la regla PARTICIPACION como etiqueta, igual que
 //    `conciliar`) por la diferencia hasta `puntos_minimos` de la categoría y recalcula.
 // Bajar de categoría solo se permite si el jugador no tiene movimientos de partidos vigentes. Crea el ranking inicial si
@@ -215,7 +216,7 @@ export const asignarCategoria = async (jugadorId, disciplina, categoriaId, db = 
   const falla = (codigo) => Object.assign(new Error(codigo), { codigo })
 
   const { rows: [categoria] } = await db.query(
-    'select id, disciplina, puntos_minimos as "puntosMinimos", puntos_maximos as "puntosMaximos" from categoria_tecnica where id = $1',
+    'select id, disciplina, puntos_minimos as "puntosMinimos" from categoria_tecnica where id = $1',
     [categoriaId]
   )
   if (!categoria) throw falla('CATEGORIA_INEXISTENTE')
@@ -227,9 +228,14 @@ export const asignarCategoria = async (jugadorId, disciplina, categoriaId, db = 
   await conciliar([ranking.id], db)
   const { rows: [{ puntos }] } = await db.query('select puntos_totales as puntos from ranking_disciplina where id = $1', [ranking.id])
 
+  // «Ya está en esa categoría» se decide con la misma regla que usa el recálculo (SQL_CATEGORIA), no con el rango
+  // mínimo-máximo: así un puntaje que cae en un hueco entre rangos, o por debajo del mínimo de la inicial, cuenta como
+  // ya ubicado y no se le mueven los puntos.
+  const { rows: [{ actualId }] } = await db.query(`select ${SQL_CATEGORIA} as "actualId" from ranking_disciplina r where r.id = $1`, [ranking.id])
+
   let ajuste = 0
-  if (puntos < categoria.puntosMinimos || puntos > categoria.puntosMaximos) {
-    if (puntos > categoria.puntosMaximos) {
+  if (actualId !== categoria.id) {
+    if (puntos >= categoria.puntosMinimos) { // está en una categoría superior: bajarlo
       const { rows: [{ total }] } = await db.query(
         'select count(*)::int as total from movimiento_puntos where ranking_id = $1 and partido_id is not null and not revertido',
         [ranking.id]
@@ -254,6 +260,7 @@ export const asignarCategoria = async (jugadorId, disciplina, categoriaId, db = 
   const [resultado] = await recalcularRankings('r.id = $1', [ranking.id], db)
   return { jugadorId, disciplina, categoriaId: resultado.categoriaId, puntosTotales: resultado.puntosTotales, ajuste }
 }
+
 
 // Ranking de una disciplina, de más a menos puntos. Solo cuentas de jugador: el personal del club (organizador,
 // recepcionista, administrador) no figura aunque tenga un perfil de jugador. Los empatados comparten posición (1, 2, 2, 4). `categoriaId`
