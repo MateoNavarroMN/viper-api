@@ -78,6 +78,19 @@ export const calcularPrecio = (precioHora, horaInicio, horaFin) => {
   return Math.round(Number(precioHora) * duracion / 60 * 100) / 100
 }
 
+// Pasa a EXPIRADA toda reserva PENDIENTE cuyo plazo de pago ya venció (CU 2.2 · A2): su franja queda libre, porque la
+// restricción de superposición solo mira PENDIENTE y CONFIRMADA. Devuelve cuántas expiró.
+// Es el enfoque "perezoso" del plan (sin cron, porque Render puede dormir la instancia): hay que llamarla al comienzo
+// de la grilla, los listados, crear una reserva, cobrar, cancelar y modificar. `expiracion_pago` es timestamptz, así que
+// la comparación con now() no depende de la zona horaria. Las reservas sin plazo (torneo y fijas) no se tocan.
+export const expirarVencidas = async (db = pool) => {
+  const { rowCount } = await db.query(
+    `update reserva set estado = 'EXPIRADA'
+      where estado = 'PENDIENTE' and expiracion_pago is not null and expiracion_pago < now()`,
+  )
+  return rowCount
+}
+
 // true si la cancha existe, está activa y no tiene ninguna reserva vigente que pise la franja.
 // `ignorarReservaId` sirve al reprogramar: la reserva actual del partido no cuenta como ocupación.
 export const verificarDisponibilidad = async (canchaId, fecha, horaInicio, horaFin, db = pool, ignorarReservaId = null) => {
