@@ -6,6 +6,14 @@ import { pool } from '../../config/conexion.bd.js'
 // que se pisen, así que ni dos pedidos simultáneos pueden quedarse con la misma franja.
 
 export const MENSAJE_FRANJA_OCUPADA = 'Franja ocupada, elegí otro horario'
+// Reglas de negocio del Módulo 2 (decisiones del club y supuestos del plan). Están acá, y no repetidas en cada tarea,
+// para que las usen igual la grilla, las reservas del jugador, el turno directo y los alquileres fijos.
+export const HORA_APERTURA = '08:00'            // primer turno de la grilla
+export const HORA_CIERRE = '23:00'              // el último turno termina a esta hora
+export const DURACION_TURNO_MINUTOS = 60        // turno que pide el jugador (recepción puede cargar otra duración)
+export const PLAZO_PAGO_HORAS = 24              // una reserva Pendiente vence a las 24 h, o al inicio del turno si es antes
+export const ANTICIPACION_CANCELACION_HORAS = 3 // el Jugador cancela hasta 3 h antes; Recepción y Administrador, hasta que empiece
+export const MESES_ALQUILER_FIJO = 3            // duración de un contrato de alquiler fijo (y de cada renovación)
 
 // Código con el que Postgres informa que se violó una restricción EXCLUDE
 const SOLAPAMIENTO = '23P01'
@@ -49,6 +57,25 @@ export const listarCanchas = async (disciplina, db = pool) => {
     [disciplina],
   )
   return rows
+}
+
+// Una cancha con su precio por hora, o null si no existe. `precioHora` sale como número (la base lo devuelve como texto).
+export const obtenerCancha = async (canchaId, db = pool) => {
+  const { rows } = await db.query(
+    `select id, nombre, deporte, tipo_superficie as "tipoSuperficie", precio_hora as "precioHora", activa
+       from cancha
+      where id = $1`,
+    [canchaId],
+  )
+  return rows[0] ? { ...rows[0], precioHora: Number(rows[0].precioHora) } : null
+}
+
+// Precio de un turno: el precio por hora proporcional a la duración, con dos decimales.
+//   calcularPrecio(10000, '19:00', '20:30') → 15000
+export const calcularPrecio = (precioHora, horaInicio, horaFin) => {
+  const minutos = (hora) => Number(hora.slice(0, 2)) * 60 + Number(hora.slice(3, 5))
+  const duracion = minutos(horaFin) - minutos(horaInicio)
+  return Math.round(Number(precioHora) * duracion / 60 * 100) / 100
 }
 
 // true si la cancha existe, está activa y no tiene ninguna reserva vigente que pise la franja.
