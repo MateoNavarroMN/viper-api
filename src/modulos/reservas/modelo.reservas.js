@@ -50,13 +50,13 @@ const enTransaccion = async (db, trabajo) => {
 // Canchas activas de una disciplina ('TENIS' | 'PADEL'), en el orden en que las usa el scheduler
 export const listarCanchas = async (disciplina, db = pool) => {
   const { rows } = await db.query(
-    `select id, nombre, deporte, tipo_superficie as "tipoSuperficie"
+    `select id, nombre, deporte, tipo_superficie as "tipoSuperficie", precio_hora as "precioHora"
        from cancha
       where activa and deporte = $1
       order by nombre`,
     [disciplina],
   )
-  return rows
+  return rows.map((cancha) => ({ ...cancha, precioHora: Number(cancha.precioHora) }))
 }
 
 // Una cancha con su precio por hora, o null si no existe. `precioHora` sale como número (la base lo devuelve como texto).

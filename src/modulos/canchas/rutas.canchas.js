@@ -5,6 +5,6 @@ import { disponibilidad } from './controlador.canchas.js'
 const router = Router()
 
 // Se monta en /api/canchas (ver app.js)
-router.get('/disponibilidad', autenticar, autorizar('RECEPCIONISTA', 'ORGANIZADOR'), disponibilidad)
+router.get('/disponibilidad', autenticar, autorizar('JUGADOR', 'RECEPCIONISTA', 'ORGANIZADOR'), disponibilidad)
 
 export default router

@@ -19,7 +19,7 @@ export const disponibilidad = async (req, res) => {
   }
 
   try {
-    return res.status(200).json(await disponibilidadDelDia(disciplina, fecha))
+    return res.status(200).json(await disponibilidadDelDia(disciplina, fecha, req.usuario.rol))
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo obtener la disponibilidad de las canchas' })
