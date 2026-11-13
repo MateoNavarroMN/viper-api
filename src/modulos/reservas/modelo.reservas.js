@@ -109,6 +109,58 @@ export const verificarDisponibilidad = async (canchaId, fecha, horaInicio, horaF
   return rows[0].disponible
 }
 
+// El detalle de una reserva con todo lo que muestra la pantalla: cancha, cliente, contrato de origen (si es de un alquiler fijo)
+// y torneo (si bloquea la cancha de un partido). `segundosParaInicio` es cuánto falta para que empiece el turno (negativo si ya
+// empezó), calculado por la base en hora de Córdoba; sirve para decidir qué acciones corresponden. Devuelve null si no existe.
+export const obtenerReservaDetalle = async (reservaId, db = pool) => {
+  const { rows } = await db.query(
+    `select r.id, to_char(r.fecha, 'YYYY-MM-DD') as fecha,
+            to_char(r.hora_inicio, 'HH24:MI') as "horaInicio", to_char(r.hora_fin, 'HH24:MI') as "horaFin",
+            r.tipo, r.estado, r.precio_aplicado as "precioAplicado", r.expiracion_pago as "expiracionPago",
+            r.metodo_pago as "metodoPago", r.fecha_pago as "fechaPago", r.creada_en as "creadaEn",
+            extract(epoch from ((r.fecha + r.hora_inicio) at time zone 'America/Argentina/Cordoba' - now())) as "segundosParaInicio",
+            c.id as "canchaId", c.nombre as "canchaNombre", c.deporte, c.tipo_superficie as "tipoSuperficie", c.precio_hora as "precioHora",
+            u.id as "clienteId", u.nombre as "clienteNombre", u.apellido as "clienteApellido", u.email as "clienteEmail", u.telefono as "clienteTelefono",
+            r.nombre_contacto as "nombreContacto",
+            rf.id as "contratoId", rf.dia_semana as "diaSemana", rf.fecha_inicio as "contratoInicio", rf.fecha_fin_contrato as "contratoFin", rf.estado as "contratoEstado",
+            t.id as "torneoId", t.nombre as "torneoNombre"
+       from reserva r
+       join cancha c on c.id = r.cancha_id
+       left join usuario u on u.id = r.cliente_usuario_id
+       left join reserva_fija rf on rf.id = r.reserva_fija_id
+       left join partido p on p.reserva_id = r.id
+       left join torneo t on t.id = p.torneo_id
+      where r.id = $1`,
+    [reservaId],
+  )
+  const r = rows[0]
+  if (!r) return null
+  const cliente = r.clienteId
+    ? { id: r.clienteId, nombre: r.clienteNombre, apellido: r.clienteApellido, email: r.clienteEmail, telefono: r.clienteTelefono }
+    : r.nombreContacto ? { id: null, nombre: r.nombreContacto, apellido: '', email: null, telefono: null } : null
+  return {
+    id: r.id,
+    cancha: { id: r.canchaId, nombre: r.canchaNombre, deporte: r.deporte, tipoSuperficie: r.tipoSuperficie, precioHora: Number(r.precioHora) },
+    fecha: r.fecha,
+    horaInicio: r.horaInicio,
+    horaFin: r.horaFin,
+    tipo: r.tipo,
+    estado: r.estado,
+    precioAplicado: r.precioAplicado === null ? null : Number(r.precioAplicado),
+    expiracionPago: r.expiracionPago,
+    metodoPago: r.metodoPago,
+    fechaPago: r.fechaPago,
+    creadaEn: r.creadaEn,
+    cliente,
+    contrato: r.contratoId
+      ? { id: r.contratoId, diaSemana: r.diaSemana, fechaInicio: r.contratoInicio, fechaFin: r.contratoFin, estado: r.contratoEstado }
+      : null,
+    torneo: r.torneoId ? { id: r.torneoId, nombre: r.torneoNombre } : null,
+    segundosParaInicio: Number(r.segundosParaInicio),
+  }
+}
+
+
 // Reservas vigentes de las canchas dadas dentro de un período: es la lista `ocupadas` que recibe el scheduler
 export const listarOcupadas = async (canchaIds, desde, hasta, db = pool, ignorarReservaId = null) => {
   const { rows } = await db.query(
