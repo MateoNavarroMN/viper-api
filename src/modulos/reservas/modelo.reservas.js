@@ -122,7 +122,7 @@ export const obtenerReservaDetalle = async (reservaId, db = pool) => {
             c.id as "canchaId", c.nombre as "canchaNombre", c.deporte, c.tipo_superficie as "tipoSuperficie", c.precio_hora as "precioHora",
             u.id as "clienteId", u.nombre as "clienteNombre", u.apellido as "clienteApellido", u.email as "clienteEmail", u.telefono as "clienteTelefono",
             r.nombre_contacto as "nombreContacto",
-            rf.id as "contratoId", rf.dia_semana as "diaSemana", rf.fecha_inicio as "contratoInicio", rf.fecha_fin_contrato as "contratoFin", rf.estado as "contratoEstado",
+                        rf.id as "contratoId", rf.dia_semana as "diaSemana", to_char(rf.fecha_inicio, 'YYYY-MM-DD') as "contratoInicio", to_char(rf.fecha_fin_contrato, 'YYYY-MM-DD') as "contratoFin", rf.estado as "contratoEstado",
             t.id as "torneoId", t.nombre as "torneoNombre"
        from reserva r
        join cancha c on c.id = r.cancha_id
