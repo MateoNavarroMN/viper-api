@@ -250,3 +250,51 @@ export const reservarParaPartido = (partidoId, { canchaId, fecha, horaInicio, ho
     if (error.franjaOcupada) return { resultado: 'FRANJA_OCUPADA' }
     throw error
   })
+  // Hora de fin de un turno: sumarMinutos('19:00', 60) → '20:00'
+const sumarMinutos = (hora, minutos) => {
+  const total = Number(hora.slice(0, 2)) * 60 + Number(hora.slice(3, 5)) + minutos
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
+}
+
+// Registra una reserva ocasional PENDIENTE para un cliente (CU 2.2). Todo en una transacción: expira las pendientes vencidas
+// (para que su franja cuente como libre), valida la cancha, el horario del club y que el turno no haya empezado, comprueba que la
+// franja esté libre y crea la reserva con el precio de la cancha y el plazo de pago (24 horas, o el inicio del turno si es antes).
+// Si dos pedidos simultáneos llegan a la vez por la misma franja, la restricción de la base deja pasar a uno y rechaza al otro.
+// Devuelve { resultado: 'OK', reservaId } | 'CANCHA_NO_ENCONTRADA' | 'CANCHA_INACTIVA' | 'FUERA_DE_HORARIO' | 'FECHA_PASADA' | 'FRANJA_OCUPADA'.
+export const crearReserva = ({ canchaId, clienteUsuarioId, fecha, horaInicio, minutos = DURACION_TURNO_MINUTOS }, db = pool) =>
+  enTransaccion(db, async (tx) => {
+    await expirarVencidas(tx)
+
+    const cancha = await obtenerCancha(canchaId, tx)
+    if (!cancha) return { resultado: 'CANCHA_NO_ENCONTRADA' }
+    if (!cancha.activa) return { resultado: 'CANCHA_INACTIVA' }
+
+    const horaFin = sumarMinutos(horaInicio, minutos)
+    if (horaInicio < HORA_APERTURA || horaFin > HORA_CIERRE) return { resultado: 'FUERA_DE_HORARIO' }
+
+    // Un turno que ya empezó (o pasó) no se puede reservar; la hora se toma en Córdoba
+    const { rows: momento } = await tx.query(
+      `select (($1::date + $2::time) at time zone 'America/Argentina/Cordoba') <= now() as pasada`,
+      [fecha, horaInicio],
+    )
+    if (momento[0].pasada) return { resultado: 'FECHA_PASADA' }
+
+    if (!(await verificarDisponibilidad(canchaId, fecha, horaInicio, horaFin, tx))) return { resultado: 'FRANJA_OCUPADA' }
+
+    try {
+      const { rows } = await tx.query(
+        `insert into reserva (cancha_id, cliente_usuario_id, fecha, hora_inicio, hora_fin, estado, tipo, precio_aplicado, expiracion_pago)
+         values ($1, $2, $3, $4, $5, 'PENDIENTE', 'OCASIONAL', $6,
+                 least(now() + make_interval(hours => $7), ($3::date + $4::time) at time zone 'America/Argentina/Cordoba'))
+         returning id`,
+        [canchaId, clienteUsuarioId, fecha, horaInicio, horaFin, calcularPrecio(cancha.precioHora, horaInicio, horaFin), PLAZO_PAGO_HORAS],
+      )
+      return { resultado: 'OK', reservaId: rows[0].id }
+    } catch (error) {
+      if (error.code !== SOLAPAMIENTO) throw error
+      throw Object.assign(new Error('FRANJA_OCUPADA'), { franjaOcupada: true })
+    }
+  }).catch((error) => {
+    if (error.franjaOcupada) return { resultado: 'FRANJA_OCUPADA' }
+    throw error
+  })
