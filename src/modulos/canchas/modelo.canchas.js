@@ -29,9 +29,8 @@ const ahoraEnCordoba = async (db) => {
 }
 
 // La grilla del día resuelta en turnos de 60 minutos. Un turno está OCUPADO si pisa alguna reserva vigente (un partido
-// de torneo de 90 minutos ocupa dos turnos), PASADO si ya terminó (o si el día ya pasó) y LIBRE en cualquier otro caso.
-// Un turno en curso sigue como OCUPADO si tiene una reserva vigente.
-// A los turnos ocupados se les suma la lista de `ocupaciones` solo cuando la respuesta trae detalle (no para el Jugador).
+// de torneo de 90 minutos ocupa dos turnos), PASADO si ya terminó (o si el día ya pasó) y no tuvo reserva, y LIBRE en cualquier
+// otro caso. Un turno ocupado sigue figurando OCUPADO aunque ya haya pasado: así en un día pasado se ve qué se reservó.
 const armarFranjas = (ocupadas, fecha, ahora, conDetalle) => {
   const fechaPasada = fecha < ahora.fecha
   const franjas = []
@@ -40,7 +39,7 @@ const armarFranjas = (ocupadas, fecha, ahora, conDetalle) => {
     const fin = inicio + DURACION_TURNO_MINUTOS
     const pisadas = ocupadas.filter((o) => aMinutos(o.horaInicio) < fin && aMinutos(o.horaFin) > inicio)
     const pasada = fechaPasada || (fecha === ahora.fecha && fin <= aMinutos(ahora.hora))
-    const franja = { horaInicio: aHora(inicio), horaFin: aHora(fin), estado: pasada ? 'PASADA' : pisadas.length ? 'OCUPADA' : 'LIBRE' }
+    const franja = { horaInicio: aHora(inicio), horaFin: aHora(fin), estado: pisadas.length ? 'OCUPADA' : pasada ? 'PASADA' : 'LIBRE' }
     if (conDetalle && pisadas.length) franja.ocupaciones = pisadas
     franjas.push(franja)
   }
