@@ -1,6 +1,7 @@
 import { listarInscripcionesDeJugador } from './modelo.actividad.js'
 import { anularInscripcionesVencidas } from '../torneos/modelo.inscripciones.js'
 import { obtenerMisCuotas } from '../cuotas/modelo.mis.cuotas.js'
+import { listarReservasRecientes } from '../reservas/modelo.mis.reservas.js'
 
 // GET /api/perfil/actividad  (CU 1.3 · A2, solo JUGADOR)
 // La forma de la respuesta ya queda fija para cuando existan los demás módulos:
@@ -12,7 +13,8 @@ export const obtenerActividad = async (req, res) => {
     await anularInscripcionesVencidas()
     const inscripciones = await listarInscripcionesDeJugador(req.usuario.jugador_id)
     const cuotas = await obtenerMisCuotas(req.usuario.jugador_id)
-    return res.status(200).json({ inscripciones, reservas: [], pagos: [], cuotas })
+    const reservas = await listarReservasRecientes(req.usuario.id)
+    return res.status(200).json({ inscripciones, reservas, pagos: [], cuotas })
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo obtener la actividad' })
