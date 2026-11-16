@@ -1,5 +1,5 @@
 import { accionesPermitidas } from './acciones.reservas.js'
-import { ANTICIPACION_CANCELACION_HORAS, MENSAJE_FRANJA_OCUPADA, cancelarPorDecision, confirmarReserva, crearReserva, expirarVencidas, obtenerClienteReserva, obtenerReservaDetalle } from './modelo.reservas.js'
+import { ANTICIPACION_CANCELACION_HORAS, MENSAJE_FRANJA_OCUPADA, cancelarPorDecision, confirmarReserva, crearReserva, expirarVencidas, modificarHorario, obtenerClienteReserva, obtenerReservaDetalle } from './modelo.reservas.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const NO_ENCONTRADA = { mensaje: 'Reserva no encontrada' }
@@ -217,5 +217,68 @@ export const cancelar = async (req, res) => {
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo cancelar la reserva' })
+  }
+}
+
+// Por qué no se pudo modificar el horario, según el resultado de modificarHorario
+const RECHAZOS_HORARIO = {
+  NO_ENCONTRADA: [404, 'Reserva no encontrada'],
+  NO_MODIFICABLE: [409, 'La reserva ya no se puede modificar'],
+  CANCHA_INACTIVA: [409, 'La cancha no está disponible'],
+  HORARIO_INVALIDO: [400, 'La hora de fin tiene que ser posterior a la de inicio'],
+  FUERA_DE_HORARIO: [400, 'El turno tiene que estar dentro del horario del club (08:00 a 23:00)'],
+  FECHA_PASADA: [400, 'La fecha y la hora ya pasaron'],
+  FRANJA_OCUPADA: [409, MENSAJE_FRANJA_OCUPADA],
+}
+
+const minutosDe = (hora) => Number(hora.slice(0, 2)) * 60 + Number(hora.slice(3, 5))
+
+// PATCH /api/reservas/:id/horario  { fecha, horaInicio, horaFin }
+// Cambia el día y el horario de una reserva (misma cancha) y recalcula su precio. El Jugador, solo las suyas y hasta 3 horas antes del
+// turno, y con turnos de 60 minutos en punto como al reservar; Recepción y Administrador, cualquiera, en punto o y media y con cualquier duración.
+export const modificarHorarioReserva = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json(NO_ENCONTRADA)
+  const { fecha, horaInicio, horaFin } = req.body ?? {}
+  const esJugador = req.usuario.rol === 'JUGADOR'
+
+  if (!esFecha(fecha)) return res.status(400).json({ mensaje: 'La fecha debe tener el formato AAAA-MM-DD', campo: 'fecha' })
+  const regexHora = esJugador ? /^([01]\d|2[0-3]):00$/ : REGEX_HORA
+  if (typeof horaInicio !== 'string' || !regexHora.test(horaInicio)) {
+    return res.status(400).json({ mensaje: `La hora de inicio tiene que ser en punto${esJugador ? '' : ' o y media'}, por ejemplo 19:00`, campo: 'horaInicio' })
+  }
+  if (typeof horaFin !== 'string' || !regexHora.test(horaFin)) {
+    return res.status(400).json({ mensaje: `La hora de fin tiene que ser en punto${esJugador ? '' : ' o y media'}, por ejemplo 20:00`, campo: 'horaFin' })
+  }
+  if (esJugador && minutosDe(horaFin) - minutosDe(horaInicio) !== 60) {
+    return res.status(400).json({ mensaje: 'Tu turno dura 1 hora: la hora de fin tiene que ser una hora después de la de inicio', campo: 'horaFin' })
+  }
+
+  try {
+    await expirarVencidas()
+    const reserva = await obtenerReservaDetalle(id)
+    if (!reserva) return res.status(404).json(NO_ENCONTRADA)
+    if (esJugador && reserva.cliente?.id !== req.usuario.id) return res.status(404).json(NO_ENCONTRADA)
+
+    const { permitido, motivo } = accionesPermitidas(reserva, req.usuario.rol).modificarHorario
+    if (!permitido) return res.status(409).json({ mensaje: motivo })
+
+    const resultado = await modificarHorario(id, { fecha, horaInicio, horaFin })
+    if (resultado.resultado !== 'OK') {
+      const [estado, mensaje] = RECHAZOS_HORARIO[resultado.resultado]
+      const campo = { HORARIO_INVALIDO: 'horaFin', FUERA_DE_HORARIO: 'horaInicio', FECHA_PASADA: 'horaInicio' }[resultado.resultado]
+      return res.status(estado).json(campo ? { mensaje, campo } : { mensaje })
+    }
+
+    const actual = await obtenerReservaDetalle(id)
+    const { segundosParaInicio, ...datos } = actual
+    return res.status(200).json({
+      mensaje: 'Horario modificado.',
+      reserva: { ...datos, acciones: accionesPermitidas(actual, req.usuario.rol) },
+      precioAnterior: resultado.precioAnterior,
+    })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo modificar el horario' })
   }
 }
