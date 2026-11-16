@@ -1,4 +1,4 @@
-import { crearReservaFija, obtenerReservaFija } from './modelo.reservas.fijas.js'
+import { CONTRATOS_POR_PAGINA, crearReservaFija, finalizarVencidos, listarReservasFijas, obtenerDetalleReservaFija, obtenerReservaFija } from './modelo.reservas.fijas.js'
 import { obtenerClienteReserva } from './modelo.reservas.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -57,5 +57,55 @@ export const crear = async (req, res) => {
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo registrar el alquiler fijo' })
+  }
+}
+
+const ESTADOS = ['VIGENTE', 'FINALIZADO']
+
+// GET /api/reservas-fijas?estado=VIGENTE|FINALIZADO&q=&pagina=1  (Recepción y Administrador)
+// Responde { estado, q, pagina, porPagina, total, totalPaginas, contratos: [...] }. Sin `estado` trae todos; `q` busca por cliente
+// (nombre, apellido, correo, DNI) o por cancha. Antes de leer, finaliza los contratos cuya fecha de fin ya pasó.
+export const listar = async (req, res) => {
+  const estado = req.query.estado === undefined || req.query.estado === '' ? null : req.query.estado
+  if (estado !== null && !ESTADOS.includes(estado)) {
+    return res.status(400).json({ mensaje: 'El estado tiene que ser VIGENTE o FINALIZADO', campo: 'estado' })
+  }
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : ''
+  const pagina = req.query.pagina === undefined ? 1 : Number(req.query.pagina)
+  if (!Number.isInteger(pagina) || pagina < 1) {
+    return res.status(400).json({ mensaje: 'La página tiene que ser un número entero desde 1', campo: 'pagina' })
+  }
+
+  try {
+    await finalizarVencidos()
+    const { total, contratos } = await listarReservasFijas({ estado, q, pagina })
+    return res.status(200).json({
+      estado,
+      q,
+      pagina,
+      porPagina: CONTRATOS_POR_PAGINA,
+      total,
+      totalPaginas: Math.max(1, Math.ceil(total / CONTRATOS_POR_PAGINA)),
+      contratos,
+    })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudieron obtener los alquileres fijos' })
+  }
+}
+
+// GET /api/reservas-fijas/:id  (Recepción y Administrador)
+// El contrato con cada una de sus reservas FIJA y su estado (CONFIRMADA o CANCELADA), de la primera a la última fecha.
+export const obtener = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json({ mensaje: 'Contrato no encontrado' })
+  try {
+    await finalizarVencidos()
+    const contrato = await obtenerDetalleReservaFija(id)
+    if (!contrato) return res.status(404).json({ mensaje: 'Contrato no encontrado' })
+    return res.status(200).json(contrato)
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo obtener el contrato' })
   }
 }
