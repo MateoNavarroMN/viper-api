@@ -1,5 +1,5 @@
 import { accionesPermitidas } from './acciones.reservas.js'
-import { MENSAJE_FRANJA_OCUPADA, crearReserva, expirarVencidas, obtenerClienteReserva, obtenerReservaDetalle } from './modelo.reservas.js'
+import { MENSAJE_FRANJA_OCUPADA, confirmarReserva, crearReserva, expirarVencidas, obtenerClienteReserva, obtenerReservaDetalle } from './modelo.reservas.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const NO_ENCONTRADA = { mensaje: 'Reserva no encontrada' }
@@ -134,5 +134,39 @@ export const crearDirecta = async (req, res) => {
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo registrar el turno' })
+  }
+}
+
+// Por qué no se pudo cobrar, según el resultado de confirmarReserva
+const RECHAZOS_COBRO = {
+  NO_ENCONTRADA: [404, 'Reserva no encontrada'],
+  NO_COBRABLE: [409, 'Esta reserva no se cobra desde acá'],
+  EXPIRADA: [409, 'El plazo de pago venció y la franja fue liberada'],
+  YA_PAGADA: [409, 'La reserva ya está pagada'],
+  CANCELADA: [409, 'La reserva está cancelada'],
+}
+
+// POST /api/reservas/:id/cobro  { metodoPago: 'EFECTIVO' | 'TRANSFERENCIA' }
+// Recepción registra el pago de una reserva PENDIENTE: pasa a CONFIRMADA con el medio, la fecha y quién la cobró.
+export const cobrar = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json(NO_ENCONTRADA)
+  const { metodoPago } = req.body ?? {}
+  if (!METODOS_DE_COBRO.includes(metodoPago)) {
+    return res.status(400).json({ mensaje: 'Elegí el medio de pago: efectivo o transferencia', campo: 'metodoPago' })
+  }
+
+  try {
+    const { resultado } = await confirmarReserva(id, req.usuario.id, metodoPago)
+    if (resultado !== 'OK') {
+      const [estado, mensaje] = RECHAZOS_COBRO[resultado]
+      return res.status(estado).json({ mensaje })
+    }
+    const reserva = await obtenerReservaDetalle(id)
+    const { segundosParaInicio, ...datos } = reserva
+    return res.status(200).json({ mensaje: 'Cobro registrado. La reserva queda confirmada.', reserva: { ...datos, acciones: accionesPermitidas(reserva, req.usuario.rol) } })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo registrar el cobro' })
   }
 }

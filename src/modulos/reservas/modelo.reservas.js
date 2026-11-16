@@ -326,3 +326,30 @@ export const obtenerClienteReserva = async (jugadorId, db = pool) => {
   )
   return rows[0]?.id ?? null
 }
+
+// Registra el pago de una reserva PENDIENTE y la pasa a CONFIRMADA, con el medio, la fecha de pago y quién lo cobró (CU 2.3 · A1 y
+// CU 2.2 · A1). Es la función que van a usar también el webhook de Mercado Pago (`operadorUsuarioId` nulo, medio 'MERCADO_PAGO') y el
+// registro en caja del Módulo 5. Antes vence las pendientes con el plazo pasado: una reserva vencida ya no se puede cobrar.
+// El `update ... where estado = 'PENDIENTE'` es atómico: si dos cobros llegan a la vez, solo uno encuentra la reserva pendiente.
+// Devuelve { resultado: 'OK' } | 'NO_ENCONTRADA' | 'NO_COBRABLE' (torneo o alquiler fijo) | 'EXPIRADA' | 'YA_PAGADA' | 'CANCELADA'.
+export const confirmarReserva = (reservaId, operadorUsuarioId, metodoPago, db = pool) =>
+  enTransaccion(db, async (tx) => {
+    await expirarVencidas(tx)
+
+    const { rows: reservas } = await tx.query('select tipo, estado from reserva where id = $1', [reservaId])
+    if (!reservas[0]) return { resultado: 'NO_ENCONTRADA' }
+    if (reservas[0].tipo !== 'OCASIONAL') return { resultado: 'NO_COBRABLE' }
+
+    const { rows } = await tx.query(
+      `update reserva
+          set estado = 'CONFIRMADA', metodo_pago = $3, fecha_pago = now(), pago_registrado_por = $2, expiracion_pago = null
+        where id = $1 and estado = 'PENDIENTE'
+        returning id`,
+      [reservaId, operadorUsuarioId, metodoPago],
+    )
+    if (rows[0]) return { resultado: 'OK' }
+
+    // No estaba pendiente (o la ganó otro cobro simultáneo): se informa en qué estado quedó
+    const { rows: actual } = await tx.query('select estado from reserva where id = $1', [reservaId])
+    return { resultado: { CONFIRMADA: 'YA_PAGADA', EXPIRADA: 'EXPIRADA', CANCELADA: 'CANCELADA' }[actual[0].estado] }
+  })
