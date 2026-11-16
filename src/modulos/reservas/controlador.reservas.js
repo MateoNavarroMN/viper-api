@@ -1,5 +1,5 @@
 import { accionesPermitidas } from './acciones.reservas.js'
-import { ANTICIPACION_CANCELACION_HORAS, MENSAJE_FRANJA_OCUPADA, cancelarPorDecision, confirmarReserva, crearReserva, expirarVencidas, modificarHorario, obtenerClienteReserva, obtenerReservaDetalle } from './modelo.reservas.js'
+import { ANTICIPACION_CANCELACION_HORAS, MENSAJE_FRANJA_OCUPADA, canchasParaReasignar, cancelarPorDecision, confirmarReserva, crearReserva, expirarVencidas, modificarHorario, obtenerClienteReserva, obtenerReservaDetalle, reasignarCancha } from './modelo.reservas.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const NO_ENCONTRADA = { mensaje: 'Reserva no encontrada' }
@@ -280,5 +280,73 @@ export const modificarHorarioReserva = async (req, res) => {
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo modificar el horario' })
+  }
+}
+
+// GET /api/reservas/:id/canchas-disponibles
+// Las otras canchas del mismo deporte donde la franja de la reserva está libre (puede venir vacía), con el precio que tendría en cada una.
+export const canchasDisponibles = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json(NO_ENCONTRADA)
+
+  try {
+    await expirarVencidas()
+    const reserva = await obtenerReservaDetalle(id)
+    if (!reserva) return res.status(404).json(NO_ENCONTRADA)
+    const { permitido, motivo } = accionesPermitidas(reserva, req.usuario.rol).reasignarCancha
+    if (!permitido) return res.status(409).json({ mensaje: motivo })
+
+    return res.status(200).json({ canchas: await canchasParaReasignar(id) })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudieron consultar las canchas' })
+  }
+}
+
+// Por qué no se pudo reasignar la cancha, según el resultado de reasignarCancha
+const RECHAZOS_CANCHA = {
+  NO_ENCONTRADA: [404, 'Reserva no encontrada'],
+  NO_MODIFICABLE: [409, 'La reserva ya no se puede modificar'],
+  CANCHA_NO_ENCONTRADA: [404, 'Cancha no encontrada'],
+  CANCHA_INACTIVA: [409, 'La cancha no está disponible'],
+  OTRO_DEPORTE: [400, 'La cancha debe ser del mismo deporte'],
+  MISMA_CANCHA: [400, 'La reserva ya está en esa cancha'],
+  FRANJA_OCUPADA: [409, MENSAJE_FRANJA_OCUPADA],
+}
+
+// PATCH /api/reservas/:id/cancha  { canchaId }
+// Recepción y Administrador mueven la reserva a otra cancha del mismo deporte, con el mismo horario. El precio se recalcula con la cancha nueva.
+export const reasignarCanchaReserva = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json(NO_ENCONTRADA)
+  const { canchaId } = req.body ?? {}
+  if (typeof canchaId !== 'string' || !REGEX_UUID.test(canchaId)) {
+    return res.status(400).json({ mensaje: 'Elegí una cancha', campo: 'canchaId' })
+  }
+
+  try {
+    await expirarVencidas()
+    const reserva = await obtenerReservaDetalle(id)
+    if (!reserva) return res.status(404).json(NO_ENCONTRADA)
+    const { permitido, motivo } = accionesPermitidas(reserva, req.usuario.rol).reasignarCancha
+    if (!permitido) return res.status(409).json({ mensaje: motivo })
+
+    const resultado = await reasignarCancha(id, canchaId)
+    if (resultado.resultado !== 'OK') {
+      const [estado, mensaje] = RECHAZOS_CANCHA[resultado.resultado]
+      const campo = ['OTRO_DEPORTE', 'MISMA_CANCHA', 'CANCHA_NO_ENCONTRADA'].includes(resultado.resultado) ? 'canchaId' : undefined
+      return res.status(estado).json(campo ? { mensaje, campo } : { mensaje })
+    }
+
+    const actual = await obtenerReservaDetalle(id)
+    const { segundosParaInicio, ...datos } = actual
+    return res.status(200).json({
+      mensaje: 'Cancha reasignada.',
+      reserva: { ...datos, acciones: accionesPermitidas(actual, req.usuario.rol) },
+      precioAnterior: resultado.precioAnterior,
+    })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo reasignar la cancha' })
   }
 }

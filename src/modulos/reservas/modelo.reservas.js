@@ -418,3 +418,80 @@ export const modificarHorario = (reservaId, { fecha, horaInicio, horaFin }, db =
     if (error.franjaOcupada) return { resultado: 'FRANJA_OCUPADA' }
     throw error
   })
+
+  // Las otras canchas activas del mismo deporte donde la franja de la reserva está libre, con el precio que tendría en cada una
+// (CU 2.5 · A2). Devuelve null si la reserva no existe.
+export const canchasParaReasignar = async (reservaId, db = pool) => {
+  const { rows } = await db.query(
+    `select cancha_id as "canchaId", to_char(fecha, 'YYYY-MM-DD') as fecha,
+            to_char(hora_inicio, 'HH24:MI') as "horaInicio", to_char(hora_fin, 'HH24:MI') as "horaFin"
+       from reserva where id = $1`,
+    [reservaId],
+  )
+  if (!rows[0]) return null
+  const { canchaId, fecha, horaInicio, horaFin } = rows[0]
+  const actual = await obtenerCancha(canchaId, db)
+  const { rows: candidatas } = await db.query(
+    `select id from cancha where activa and deporte = $1 and id <> $2 order by nombre`,
+    [actual.deporte, canchaId],
+  )
+  const libres = []
+  for (const { id } of candidatas) {
+    if (await verificarDisponibilidad(id, fecha, horaInicio, horaFin, db, reservaId)) {
+      const cancha = await obtenerCancha(id, db)
+      libres.push({
+        id: cancha.id,
+        nombre: cancha.nombre,
+        deporte: cancha.deporte,
+        tipoSuperficie: cancha.tipoSuperficie,
+        precioHora: cancha.precioHora,
+        precioNuevo: calcularPrecio(cancha.precioHora, horaInicio, horaFin),
+      })
+    }
+  }
+  return libres
+}
+
+// Mueve una reserva PENDIENTE o CONFIRMADA a otra cancha del mismo deporte, con el mismo día y horario, y recalcula el precio con el
+// `precio_hora` de la cancha nueva (CU 2.5 · A2). Bloquea la reserva, comprueba la disponibilidad sin contar a la propia reserva y,
+// si dos pedidos simultáneos van por la misma franja, la restricción de la base deja pasar a uno.
+// Devuelve { resultado: 'OK', precioAnterior } | 'NO_ENCONTRADA' | 'NO_MODIFICABLE' | 'CANCHA_NO_ENCONTRADA' | 'CANCHA_INACTIVA'
+// | 'OTRO_DEPORTE' | 'MISMA_CANCHA' | 'FRANJA_OCUPADA'.
+export const reasignarCancha = (reservaId, canchaNuevaId, db = pool) =>
+  enTransaccion(db, async (tx) => {
+    await expirarVencidas(tx)
+
+    const { rows } = await tx.query(
+      `select cancha_id as "canchaId", estado, precio_aplicado as "precioAplicado", to_char(fecha, 'YYYY-MM-DD') as fecha,
+              to_char(hora_inicio, 'HH24:MI') as "horaInicio", to_char(hora_fin, 'HH24:MI') as "horaFin"
+         from reserva where id = $1 for update`,
+      [reservaId],
+    )
+    const reserva = rows[0]
+    if (!reserva) return { resultado: 'NO_ENCONTRADA' }
+    if (!['PENDIENTE', 'CONFIRMADA'].includes(reserva.estado)) return { resultado: 'NO_MODIFICABLE' }
+
+    const nueva = await obtenerCancha(canchaNuevaId, tx)
+    if (!nueva) return { resultado: 'CANCHA_NO_ENCONTRADA' }
+    if (reserva.canchaId === nueva.id) return { resultado: 'MISMA_CANCHA' }
+    const actual = await obtenerCancha(reserva.canchaId, tx)
+    if (nueva.deporte !== actual.deporte) return { resultado: 'OTRO_DEPORTE' }
+    if (!nueva.activa) return { resultado: 'CANCHA_INACTIVA' }
+
+    if (!(await verificarDisponibilidad(nueva.id, reserva.fecha, reserva.horaInicio, reserva.horaFin, tx, reservaId))) {
+      return { resultado: 'FRANJA_OCUPADA' }
+    }
+
+    try {
+      await tx.query('update reserva set cancha_id = $2, precio_aplicado = $3 where id = $1', [
+        reservaId, nueva.id, calcularPrecio(nueva.precioHora, reserva.horaInicio, reserva.horaFin),
+      ])
+      return { resultado: 'OK', precioAnterior: Number(reserva.precioAplicado) }
+    } catch (error) {
+      if (error.code !== SOLAPAMIENTO) throw error
+      throw Object.assign(new Error('FRANJA_OCUPADA'), { franjaOcupada: true })
+    }
+  }).catch((error) => {
+    if (error.franjaOcupada) return { resultado: 'FRANJA_OCUPADA' }
+    throw error
+  })
