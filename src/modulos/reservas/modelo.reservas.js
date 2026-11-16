@@ -353,3 +353,16 @@ export const confirmarReserva = (reservaId, operadorUsuarioId, metodoPago, db = 
     const { rows: actual } = await tx.query('select estado from reserva where id = $1', [reservaId])
     return { resultado: { CONFIRMADA: 'YA_PAGADA', EXPIRADA: 'EXPIRADA', CANCELADA: 'CANCELADA' }[actual[0].estado] }
   })
+
+  // Cancela una reserva por decisión de un usuario (CU 2.5): la pasa a CANCELADA y su franja queda libre. Bloquea la fila mientras decide,
+// así dos cancelaciones (o una cancelación y un cobro) simultáneas no se pisan. Solo se cancela una PENDIENTE o CONFIRMADA.
+// Si es de un alquiler fijo, cancela solo esa fecha: el contrato y las demás fechas no se tocan.
+// Devuelve { resultado: 'OK', estadoPrevio, precioAplicado } | { resultado: 'NO_ENCONTRADA' } | { resultado: 'NO_CANCELABLE', estado }.
+export const cancelarPorDecision = (reservaId, db = pool) =>
+  enTransaccion(db, async (tx) => {
+    const { rows } = await tx.query('select estado, precio_aplicado as "precioAplicado" from reserva where id = $1 for update', [reservaId])
+    if (!rows[0]) return { resultado: 'NO_ENCONTRADA' }
+    if (!['PENDIENTE', 'CONFIRMADA'].includes(rows[0].estado)) return { resultado: 'NO_CANCELABLE', estado: rows[0].estado }
+    await cancelarReserva(reservaId, tx)
+    return { resultado: 'OK', estadoPrevio: rows[0].estado, precioAplicado: Number(rows[0].precioAplicado) }
+  })
