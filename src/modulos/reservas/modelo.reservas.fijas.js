@@ -93,35 +93,101 @@ const deshacer = async (cliente, resultado) => {
   return resultado
 }
 
+export const CONTRATOS_POR_PAGINA = 10
+
+// Los contratos con la cancha, el cliente y los datos que muestran el listado y el detalle.
+// - `turnos`: cuántas reservas generó el contrato (todas, también las canceladas).
+// - `ultimoTurno`: la fecha del último turno que sigue en pie (Confirmada); null si no queda ninguno (contrato cancelado entero).
+// - `respuestaCliente`: lo que contestó el cliente al aviso de fin de contrato: null (todavía no), CONTINUAR o FINALIZAR.
+const SELECT_CONTRATOS = `
+  select rf.id, rf.dia_semana as "diaSemana", to_char(rf.hora_inicio, 'HH24:MI') as "horaInicio", to_char(rf.hora_fin, 'HH24:MI') as "horaFin",
+         to_char(rf.fecha_inicio, 'YYYY-MM-DD') as "fechaInicio", to_char(rf.fecha_fin_contrato, 'YYYY-MM-DD') as "fechaFinContrato",
+         rf.estado, rf.renovar, rf.cancelado_en as "canceladoEn",
+         c.id as "canchaId", c.nombre as "canchaNombre", c.deporte,
+         u.id as "clienteId", u.nombre as "clienteNombre", u.apellido as "clienteApellido", u.email as "clienteEmail", j.dni as "clienteDni",
+         (select count(*)::int from reserva r where r.reserva_fija_id = rf.id) as turnos,
+         (select to_char(max(r.fecha), 'YYYY-MM-DD') from reserva r where r.reserva_fija_id = rf.id and r.estado = 'CONFIRMADA') as "ultimoTurno",
+         (select r.precio_aplicado from reserva r where r.reserva_fija_id = rf.id order by r.fecha limit 1) as "precioPorTurno"
+    from reserva_fija rf
+    join cancha c on c.id = rf.cancha_id
+    left join usuario u on u.id = rf.cliente_usuario_id
+    left join jugador j on j.usuario_id = u.id`
+
+const RESPUESTAS = { true: 'CONTINUAR', false: 'FINALIZAR' }
+
+const aContrato = (f) => ({
+  id: f.id,
+  cancha: { id: f.canchaId, nombre: f.canchaNombre, deporte: f.deporte },
+  cliente: f.clienteId ? { id: f.clienteId, nombre: f.clienteNombre, apellido: f.clienteApellido, email: f.clienteEmail, dni: f.clienteDni } : null,
+  diaSemana: f.diaSemana,
+  horaInicio: f.horaInicio,
+  horaFin: f.horaFin,
+  fechaInicio: f.fechaInicio,
+  fechaFinContrato: f.fechaFinContrato,
+  estado: f.estado,
+  canceladoEn: f.canceladoEn,
+  ultimoTurno: f.ultimoTurno,
+  respuestaCliente: f.renovar === null ? null : RESPUESTAS[f.renovar],
+  turnos: f.turnos,
+  precioPorTurno: f.precioPorTurno,
+})
+
+// Pasa a FINALIZADO los contratos VIGENTES cuya fecha de fin ya pasó (CU 2.4 · A3b), con la fecha de hoy en Córdoba. No hace falta tocar
+// las reservas: el contrato no genera turnos nuevos, así que las franjas quedan libres solas. Es perezosa (sin cron): se llama antes de
+// listar y de leer un contrato. Devuelve cuántos finalizó. La reutiliza M2-BE-15.
+export const finalizarVencidos = async (db = pool) => {
+  const { rowCount } = await db.query(
+    `update reserva_fija set estado = 'FINALIZADO'
+      where estado = 'VIGENTE' and fecha_fin_contrato < (now() at time zone 'America/Argentina/Cordoba')::date`,
+  )
+  return rowCount
+}
+
 // El contrato con la cancha y el cliente, listo para mostrar. Devuelve null si no existe.
 export const obtenerReservaFija = async (contratoId, db = pool) => {
+  const { rows } = await db.query(`${SELECT_CONTRATOS} where rf.id = $1`, [contratoId])
+  return rows[0] ? aContrato(rows[0]) : null
+}
+
+// El detalle de un contrato: sus datos y cada una de sus reservas FIJA con su estado (A1), de la primera a la última fecha.
+// Devuelve null si no existe.
+export const obtenerDetalleReservaFija = async (contratoId, db = pool) => {
+  const contrato = await obtenerReservaFija(contratoId, db)
+  if (!contrato) return null
   const { rows } = await db.query(
-    `select rf.id, rf.dia_semana as "diaSemana", to_char(rf.hora_inicio, 'HH24:MI') as "horaInicio", to_char(rf.hora_fin, 'HH24:MI') as "horaFin",
-            to_char(rf.fecha_inicio, 'YYYY-MM-DD') as "fechaInicio", to_char(rf.fecha_fin_contrato, 'YYYY-MM-DD') as "fechaFinContrato",
-            rf.estado, rf.renovar,
-            c.id as "canchaId", c.nombre as "canchaNombre", c.deporte,
-            u.id as "clienteId", u.nombre as "clienteNombre", u.apellido as "clienteApellido", u.email as "clienteEmail",
-            (select count(*)::int from reserva r where r.reserva_fija_id = rf.id) as turnos,
-            (select r.precio_aplicado from reserva r where r.reserva_fija_id = rf.id order by r.fecha limit 1) as "precioPorTurno"
+    `select id, to_char(fecha, 'YYYY-MM-DD') as fecha, to_char(hora_inicio, 'HH24:MI') as "horaInicio", to_char(hora_fin, 'HH24:MI') as "horaFin",
+            estado, precio_aplicado as "precioAplicado"
+       from reserva where reserva_fija_id = $1 order by fecha`,
+    [contratoId],
+  )
+  return { ...contrato, reservas: rows }
+}
+
+// Una página de contratos, con filtro por estado y búsqueda. `q` busca (sin distinguir mayúsculas) en el nombre, apellido, correo y
+// DNI del cliente, y en el nombre de la cancha. Los vigentes van primero, por el fin de contrato más cercano (los que están por
+// terminar arriba); los finalizados, del más reciente al más antiguo.
+// Devuelve { total, contratos } (el total es de todas las páginas).
+export const listarReservasFijas = async ({ estado = null, q = '', pagina = 1 }, db = pool) => {
+  const patron = `%${q.replace(/[\\%_]/g, '\\$&')}%`
+  const filtro = `
+       where ($1::text is null or rf.estado::text = $1)
+         and ($2 = '' or u.nombre ilike $3 or u.apellido ilike $3 or (u.nombre || ' ' || u.apellido) ilike $3
+              or u.email ilike $3 or j.dni ilike $3 or c.nombre ilike $3)`
+  const { rows } = await db.query(
+    `${SELECT_CONTRATOS} ${filtro}
+      order by (rf.estado = 'VIGENTE') desc,
+               case when rf.estado = 'VIGENTE' then rf.fecha_fin_contrato end asc,
+               rf.fecha_fin_contrato desc, rf.id
+      limit $4 offset $5`,
+    [estado, q, patron, CONTRATOS_POR_PAGINA, (pagina - 1) * CONTRATOS_POR_PAGINA],
+  )
+  const { rows: cuenta } = await db.query(
+    `select count(*)::int as total
        from reserva_fija rf
        join cancha c on c.id = rf.cancha_id
        left join usuario u on u.id = rf.cliente_usuario_id
-      where rf.id = $1`,
-    [contratoId],
+       left join jugador j on j.usuario_id = u.id ${filtro}`,
+    [estado, q, patron],
   )
-  const f = rows[0]
-  if (!f) return null
-  return {
-    id: f.id,
-    cancha: { id: f.canchaId, nombre: f.canchaNombre, deporte: f.deporte },
-    cliente: f.clienteId ? { id: f.clienteId, nombre: f.clienteNombre, apellido: f.clienteApellido, email: f.clienteEmail } : null,
-    diaSemana: f.diaSemana,
-    horaInicio: f.horaInicio,
-    horaFin: f.horaFin,
-    fechaInicio: f.fechaInicio,
-    fechaFinContrato: f.fechaFinContrato,
-    estado: f.estado,
-    turnos: f.turnos,
-    precioPorTurno: f.precioPorTurno,
-  }
+  return { total: cuenta[0].total, contratos: rows.map(aContrato) }
 }
