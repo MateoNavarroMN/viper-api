@@ -1,5 +1,5 @@
 import { accionesPermitidas } from './acciones.reservas.js'
-import { MENSAJE_FRANJA_OCUPADA, confirmarReserva, crearReserva, expirarVencidas, obtenerClienteReserva, obtenerReservaDetalle } from './modelo.reservas.js'
+import { ANTICIPACION_CANCELACION_HORAS, MENSAJE_FRANJA_OCUPADA, cancelarPorDecision, confirmarReserva, crearReserva, expirarVencidas, obtenerClienteReserva, obtenerReservaDetalle } from './modelo.reservas.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const NO_ENCONTRADA = { mensaje: 'Reserva no encontrada' }
@@ -168,5 +168,54 @@ export const cobrar = async (req, res) => {
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo registrar el cobro' })
+  }
+}
+
+// POST /api/reservas/:id/cancelar  { confirmarFueraDePlazo? }
+// Cancela una reserva y libera su franja. El Jugador, solo las suyas y hasta 3 horas antes; Recepción y Administrador, cualquiera
+// mientras el turno no haya empezado. Si al personal le faltan menos de 3 horas, la primera llamada responde 409 con
+// `requiereConfirmacion` y recién con `confirmarFueraDePlazo: true` se cancela. Una fecha de un alquiler fijo se cancela sola.
+export const cancelar = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json(NO_ENCONTRADA)
+  const { confirmarFueraDePlazo } = req.body ?? {}
+  if (confirmarFueraDePlazo !== undefined && typeof confirmarFueraDePlazo !== 'boolean') {
+    return res.status(400).json({ mensaje: 'confirmarFueraDePlazo tiene que ser verdadero o falso', campo: 'confirmarFueraDePlazo' })
+  }
+
+  try {
+    // Antes de decidir: una pendiente con el plazo vencido figura expirada
+    await expirarVencidas()
+    const reserva = await obtenerReservaDetalle(id)
+    if (!reserva) return res.status(404).json(NO_ENCONTRADA)
+    // La reserva de otro Jugador responde como si no existiera
+    if (req.usuario.rol === 'JUGADOR' && reserva.cliente?.id !== req.usuario.id) return res.status(404).json(NO_ENCONTRADA)
+
+    const { permitido, motivo } = accionesPermitidas(reserva, req.usuario.rol).cancelar
+    if (!permitido) return res.status(409).json({ mensaje: motivo })
+
+    const fueraDePlazo = req.usuario.rol !== 'JUGADOR' && reserva.segundosParaInicio < ANTICIPACION_CANCELACION_HORAS * 3600
+    if (fueraDePlazo && confirmarFueraDePlazo !== true) {
+      return res.status(409).json({
+        mensaje: `Faltan menos de ${ANTICIPACION_CANCELACION_HORAS} horas para el turno: es una cancelación fuera de plazo. Confirmá para cancelarla igual.`,
+        requiereConfirmacion: true,
+      })
+    }
+
+    const cancelada = await cancelarPorDecision(id)
+    if (cancelada.resultado !== 'OK') {
+      // La ganó otra operación simultánea (otra cancelación, o venció): se informa cómo quedó
+      return res.status(409).json({ mensaje: cancelada.estado === 'EXPIRADA' ? 'La reserva expiró por falta de pago' : 'La reserva está cancelada' })
+    }
+
+    const actual = await obtenerReservaDetalle(id)
+    const { segundosParaInicio, ...datos } = actual
+    const respuesta = { mensaje: 'Reserva cancelada. La franja quedó libre.', reserva: { ...datos, acciones: accionesPermitidas(actual, req.usuario.rol) } }
+    // Los reembolsos se gestionan fuera del sistema
+    if (cancelada.estadoPrevio === 'CONFIRMADA' && cancelada.precioAplicado > 0) respuesta.reembolsoFueraDelSistema = true
+    return res.status(200).json(respuesta)
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo cancelar la reserva' })
   }
 }
