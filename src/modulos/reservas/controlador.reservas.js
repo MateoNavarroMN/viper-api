@@ -1,5 +1,5 @@
 import { accionesPermitidas } from './acciones.reservas.js'
-import { MENSAJE_FRANJA_OCUPADA, crearReserva, expirarVencidas, obtenerReservaDetalle } from './modelo.reservas.js'
+import { MENSAJE_FRANJA_OCUPADA, crearReserva, expirarVencidas, obtenerClienteReserva, obtenerReservaDetalle } from './modelo.reservas.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const NO_ENCONTRADA = { mensaje: 'Reserva no encontrada' }
@@ -37,6 +37,7 @@ const MEDIOS_DE_PAGO = ['EN_LINEA', 'RECEPCION']
 const RECHAZOS = {
   CANCHA_NO_ENCONTRADA: [404, 'Cancha no encontrada'],
   CANCHA_INACTIVA: [409, 'La cancha no está disponible'],
+  HORARIO_INVALIDO: [400, 'La hora de fin tiene que ser posterior a la de inicio'],
   FUERA_DE_HORARIO: [400, 'El turno tiene que estar dentro del horario del club (08:00 a 23:00)'],
   FECHA_PASADA: [400, 'La fecha y la hora ya pasaron'],
   FRANJA_OCUPADA: [409, MENSAJE_FRANJA_OCUPADA],
@@ -75,5 +76,63 @@ export const crear = async (req, res) => {
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo solicitar la reserva' })
+  }
+}
+
+
+const METODOS_DE_COBRO = ['EFECTIVO', 'TRANSFERENCIA']
+const REGEX_HORA = /^([01]\d|2[0-3]):(00|30)$/
+
+// POST /api/reservas/directa  { clienteJugadorId, canchaId, fecha, horaInicio, horaFin, cobro: { registrar, metodoPago? } }
+// Recepción carga un turno para un cliente con cuenta (CU 2.3), con cualquier horario del día en punto o y media.
+// Con cobro registrado queda CONFIRMADA (método, fecha de pago y operador); sin cobro, PENDIENTE con su plazo de 24 horas.
+export const crearDirecta = async (req, res) => {
+  const { clienteJugadorId, canchaId, fecha, horaInicio, horaFin, cobro } = req.body ?? {}
+  if (typeof clienteJugadorId !== 'string' || !REGEX_UUID.test(clienteJugadorId)) {
+    return res.status(400).json({ mensaje: 'Elegí el cliente del turno', campo: 'clienteJugadorId' })
+  }
+  if (typeof canchaId !== 'string' || !REGEX_UUID.test(canchaId)) {
+    return res.status(400).json({ mensaje: 'Elegí una cancha', campo: 'canchaId' })
+  }
+  if (!esFecha(fecha)) return res.status(400).json({ mensaje: 'La fecha debe tener el formato AAAA-MM-DD', campo: 'fecha' })
+  if (typeof horaInicio !== 'string' || !REGEX_HORA.test(horaInicio)) {
+    return res.status(400).json({ mensaje: 'La hora de inicio tiene que ser en punto o y media, por ejemplo 19:30', campo: 'horaInicio' })
+  }
+  if (typeof horaFin !== 'string' || !REGEX_HORA.test(horaFin)) {
+    return res.status(400).json({ mensaje: 'La hora de fin tiene que ser en punto o y media, por ejemplo 20:30', campo: 'horaFin' })
+  }
+  if (typeof cobro?.registrar !== 'boolean') {
+    return res.status(400).json({ mensaje: 'Indicá si se cobra ahora o queda pendiente', campo: 'cobro' })
+  }
+  if (cobro.registrar && !METODOS_DE_COBRO.includes(cobro.metodoPago)) {
+    return res.status(400).json({ mensaje: 'Elegí el medio de pago: efectivo o transferencia', campo: 'metodoPago' })
+  }
+
+  try {
+    const clienteUsuarioId = await obtenerClienteReserva(clienteJugadorId)
+    if (!clienteUsuarioId) return res.status(404).json({ mensaje: 'El cliente debe tener una cuenta para reservar', campo: 'clienteJugadorId' })
+
+    const resultado = await crearReserva({
+      canchaId,
+      clienteUsuarioId,
+      fecha,
+      horaInicio,
+      horaFin,
+      cobro: cobro.registrar ? { metodoPago: cobro.metodoPago, operadorUsuarioId: req.usuario.id } : null,
+    })
+    if (resultado.resultado !== 'OK') {
+      const [estado, mensaje] = RECHAZOS[resultado.resultado]
+      return res.status(estado).json({ mensaje })
+    }
+
+    const reserva = await obtenerReservaDetalle(resultado.reservaId)
+    const { segundosParaInicio, ...datos } = reserva
+    const mensaje = cobro.registrar
+      ? 'Turno registrado y cobrado. La reserva queda confirmada.'
+      : 'Turno registrado. Queda pendiente hasta que se registre el pago.'
+    return res.status(201).json({ mensaje, reserva: { ...datos, acciones: accionesPermitidas(reserva, req.usuario.rol) } })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo registrar el turno' })
   }
 }

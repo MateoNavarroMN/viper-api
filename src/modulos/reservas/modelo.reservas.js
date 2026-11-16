@@ -256,12 +256,19 @@ const sumarMinutos = (hora, minutos) => {
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
 }
 
-// Registra una reserva ocasional PENDIENTE para un cliente (CU 2.2). Todo en una transacción: expira las pendientes vencidas
+// Registra una reserva ocasional para un cliente (CU 2.2 y CU 2.3). Todo en una transacción: expira las pendientes vencidas
 // (para que su franja cuente como libre), valida la cancha, el horario del club y que el turno no haya empezado, comprueba que la
-// franja esté libre y crea la reserva con el precio de la cancha y el plazo de pago (24 horas, o el inicio del turno si es antes).
+// franja esté libre y crea la reserva con el precio de la cancha.
+// - Sin `horaFin`, el turno dura `minutos` (60 para el jugador). Recepción manda `horaFin` para elegir cualquier horario del día.
+// - Sin `cobro`, queda PENDIENTE con su plazo de pago (24 horas, o el inicio del turno si es antes).
+// - Con `cobro` ({ metodoPago, operadorUsuarioId }) queda CONFIRMADA, ya paga, sin plazo (CU 2.3, paso de cobro).
 // Si dos pedidos simultáneos llegan a la vez por la misma franja, la restricción de la base deja pasar a uno y rechaza al otro.
-// Devuelve { resultado: 'OK', reservaId } | 'CANCHA_NO_ENCONTRADA' | 'CANCHA_INACTIVA' | 'FUERA_DE_HORARIO' | 'FECHA_PASADA' | 'FRANJA_OCUPADA'.
-export const crearReserva = ({ canchaId, clienteUsuarioId, fecha, horaInicio, minutos = DURACION_TURNO_MINUTOS }, db = pool) =>
+// Devuelve { resultado: 'OK', reservaId } | 'CANCHA_NO_ENCONTRADA' | 'CANCHA_INACTIVA' | 'HORARIO_INVALIDO' | 'FUERA_DE_HORARIO'
+// | 'FECHA_PASADA' | 'FRANJA_OCUPADA'.
+export const crearReserva = (
+  { canchaId, clienteUsuarioId, fecha, horaInicio, horaFin: horaFinElegida, minutos = DURACION_TURNO_MINUTOS, cobro = null },
+  db = pool,
+) =>
   enTransaccion(db, async (tx) => {
     await expirarVencidas(tx)
 
@@ -269,7 +276,8 @@ export const crearReserva = ({ canchaId, clienteUsuarioId, fecha, horaInicio, mi
     if (!cancha) return { resultado: 'CANCHA_NO_ENCONTRADA' }
     if (!cancha.activa) return { resultado: 'CANCHA_INACTIVA' }
 
-    const horaFin = sumarMinutos(horaInicio, minutos)
+    const horaFin = horaFinElegida ?? sumarMinutos(horaInicio, minutos)
+    if (horaFin <= horaInicio) return { resultado: 'HORARIO_INVALIDO' }
     if (horaInicio < HORA_APERTURA || horaFin > HORA_CIERRE) return { resultado: 'FUERA_DE_HORARIO' }
 
     // Un turno que ya empezó (o pasó) no se puede reservar; la hora se toma en Córdoba
@@ -283,11 +291,21 @@ export const crearReserva = ({ canchaId, clienteUsuarioId, fecha, horaInicio, mi
 
     try {
       const { rows } = await tx.query(
-        `insert into reserva (cancha_id, cliente_usuario_id, fecha, hora_inicio, hora_fin, estado, tipo, precio_aplicado, expiracion_pago)
-         values ($1, $2, $3, $4, $5, 'PENDIENTE', 'OCASIONAL', $6,
-                 least(now() + make_interval(hours => $7), ($3::date + $4::time) at time zone 'America/Argentina/Cordoba'))
+        `insert into reserva (cancha_id, cliente_usuario_id, fecha, hora_inicio, hora_fin, estado, tipo, precio_aplicado,
+                              expiracion_pago, metodo_pago, fecha_pago, pago_registrado_por)
+         values ($1, $2, $3, $4, $5,
+                 case when $8::boolean then 'CONFIRMADA'::estado_reserva else 'PENDIENTE'::estado_reserva end,
+                 'OCASIONAL', $6,
+                 case when $8::boolean then null
+                      else least(now() + make_interval(hours => $7), ($3::date + $4::time) at time zone 'America/Argentina/Cordoba') end,
+                 $9::metodo_pago,
+                 case when $8::boolean then now() end,
+                 $10::uuid)
          returning id`,
-        [canchaId, clienteUsuarioId, fecha, horaInicio, horaFin, calcularPrecio(cancha.precioHora, horaInicio, horaFin), PLAZO_PAGO_HORAS],
+        [
+          canchaId, clienteUsuarioId, fecha, horaInicio, horaFin, calcularPrecio(cancha.precioHora, horaInicio, horaFin), PLAZO_PAGO_HORAS,
+          Boolean(cobro), cobro?.metodoPago ?? null, cobro?.operadorUsuarioId ?? null,
+        ],
       )
       return { resultado: 'OK', reservaId: rows[0].id }
     } catch (error) {
@@ -298,3 +316,13 @@ export const crearReserva = ({ canchaId, clienteUsuarioId, fecha, horaInicio, mi
     if (error.franjaOcupada) return { resultado: 'FRANJA_OCUPADA' }
     throw error
   })
+
+// El usuario de un jugador (el id que devuelve la búsqueda de clientes), o null si no existe, no es un jugador o su cuenta no está activa.
+export const obtenerClienteReserva = async (jugadorId, db = pool) => {
+  const { rows } = await db.query(
+    `select u.id from jugador j join usuario u on u.id = j.usuario_id
+      where j.id = $1 and u.rol = 'JUGADOR' and u.estado = 'ACTIVO'`,
+    [jugadorId],
+  )
+  return rows[0]?.id ?? null
+}
