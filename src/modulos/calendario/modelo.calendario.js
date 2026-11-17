@@ -17,7 +17,7 @@ export const torneosDelPeriodo = async (desde, hasta, estados, db = pool) => {
   return rows
 }
 
-const pareja = (nombre, apellido, companeroNombre, companeroApellido) =>
+export const pareja = (nombre, apellido, companeroNombre, companeroApellido) =>
   companeroNombre ? `${apellido} / ${companeroApellido}` : `${nombre} ${apellido}`
 
 // Partidos con reserva vigente de la cancha dentro del período, por fecha y hora

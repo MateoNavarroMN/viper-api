@@ -1,6 +1,7 @@
 import { pool } from '../../config/conexion.bd.js'
 import { HORA_APERTURA, HORA_CIERRE, MESES_ALQUILER_FIJO, calcularPrecio, expirarVencidas, obtenerCancha } from './modelo.reservas.js'
 
+
 // Código con el que Postgres informa que se violó una restricción EXCLUDE (dos reservas vigentes que se pisan)
 const SOLAPAMIENTO = '23P01'
 
@@ -261,10 +262,11 @@ export const responderAviso = async (contratoId, clienteUsuarioId, continuar) =>
   try {
     await cliente.query('begin')
     await finalizarVencidos(cliente)
-    const { rows } = await cliente.query(
-      `${SELECT_CONTRATOS} where rf.id = $1 and rf.cliente_usuario_id = $2 for update of rf`,
-      [contratoId, clienteUsuarioId],
-    )
+
+    // Primero se bloquea el contrato y recién después se lee: así lo leído (turnos, aviso) ya incluye lo que hizo quien lo tenía bloqueado
+    await cliente.query('select 1 from reserva_fija where id = $1 for update', [contratoId])
+    const { rows } = await cliente.query(`${SELECT_CONTRATOS} where rf.id = $1 and rf.cliente_usuario_id = $2`, [contratoId, clienteUsuarioId])
+
     let resultado = { resultado: 'OK' }
     if (!rows[0]) resultado = { resultado: 'NO_ENCONTRADO' }
     else if (rows[0].estado !== 'VIGENTE') resultado = { resultado: 'YA_FINALIZADO' }
@@ -298,10 +300,11 @@ export const renovarContrato = async (contratoId) => {
   try {
     await cliente.query('begin')
     await finalizarVencidos(cliente)
-    const { rows } = await cliente.query(
-      `${SELECT_CONTRATOS} where rf.id = $1 for update of rf`,
-      [contratoId],
-    )
+    
+    // Primero se bloquea el contrato y recién después se lee: si dos renovaciones llegan juntas, la segunda ya ve los turnos de la primera
+    await cliente.query('select 1 from reserva_fija where id = $1 for update', [contratoId])
+    const { rows } = await cliente.query(`${SELECT_CONTRATOS} where rf.id = $1`, [contratoId])
+    
     const fila = rows[0]
     if (!fila || fila.estado !== 'VIGENTE' || !fila.avisoFinContrato || !fila.canchaActiva) {
       await cliente.query('commit')
@@ -360,3 +363,5 @@ export const renovarContrato = async (contratoId) => {
     cliente.release()
   }
 }
+
+
