@@ -98,13 +98,18 @@ export const CONTRATOS_POR_PAGINA = 10
 // Los contratos con la cancha, el cliente y los datos que muestran el listado y el detalle.
 // - `turnos`: cuántas reservas generó el contrato (todas, también las canceladas).
 // - `ultimoTurno`: la fecha del último turno que sigue en pie (Confirmada); null si no queda ninguno (contrato cancelado entero).
+// - `avisoFinContrato`: true desde el día del último turno (y hasta que el contrato termine): es cuando se le avisa al cliente y cuando se
+//   puede renovar. Sin cron ni notificaciones, es un dato que calcula la base cada vez que se pide.
 // - `respuestaCliente`: lo que contestó el cliente al aviso de fin de contrato: null (todavía no), CONTINUAR o FINALIZAR.
 const SELECT_CONTRATOS = `
   select rf.id, rf.dia_semana as "diaSemana", to_char(rf.hora_inicio, 'HH24:MI') as "horaInicio", to_char(rf.hora_fin, 'HH24:MI') as "horaFin",
          to_char(rf.fecha_inicio, 'YYYY-MM-DD') as "fechaInicio", to_char(rf.fecha_fin_contrato, 'YYYY-MM-DD') as "fechaFinContrato",
          rf.estado, rf.renovar, rf.cancelado_en as "canceladoEn",
-         c.id as "canchaId", c.nombre as "canchaNombre", c.deporte,
+         c.id as "canchaId", c.nombre as "canchaNombre", c.deporte, c.activa as "canchaActiva", c.precio_hora as "precioHoraActual",
+         rf.cliente_usuario_id as "clienteUsuarioId",
          u.id as "clienteId", u.nombre as "clienteNombre", u.apellido as "clienteApellido", u.email as "clienteEmail", j.dni as "clienteDni",
+         (rf.estado = 'VIGENTE' and coalesce((select max(r.fecha) from reserva r where r.reserva_fija_id = rf.id and r.estado = 'CONFIRMADA')
+                                          <= (now() at time zone 'America/Argentina/Cordoba')::date, false)) as "avisoFinContrato",
          (select count(*)::int from reserva r where r.reserva_fija_id = rf.id) as turnos,
          (select to_char(max(r.fecha), 'YYYY-MM-DD') from reserva r where r.reserva_fija_id = rf.id and r.estado = 'CONFIRMADA') as "ultimoTurno",
          (select r.precio_aplicado from reserva r where r.reserva_fija_id = rf.id order by r.fecha limit 1) as "precioPorTurno"
@@ -127,6 +132,7 @@ const aContrato = (f) => ({
   estado: f.estado,
   canceladoEn: f.canceladoEn,
   ultimoTurno: f.ultimoTurno,
+  avisoFinContrato: f.avisoFinContrato,
   respuestaCliente: f.renovar === null ? null : RESPUESTAS[f.renovar],
   turnos: f.turnos,
   precioPorTurno: f.precioPorTurno,
@@ -228,6 +234,128 @@ export const cancelarContrato = async (contratoId) => {
   } catch (error) {
     await cliente.query('rollback').catch(() => {})
     throw error
+  } finally {
+    cliente.release()
+  }
+}
+
+// Los contratos vigentes de un cliente, con el aviso de fin de contrato y su respuesta, del que termina antes al que termina después.
+// Sin los datos del cliente (es él mismo). Antes de leer, finaliza los vencidos.
+export const listarContratosDeCliente = async (clienteUsuarioId, db = pool) => {
+  await finalizarVencidos(db)
+  const { rows } = await db.query(
+    `${SELECT_CONTRATOS} where rf.cliente_usuario_id = $1 and rf.estado = 'VIGENTE' order by rf.fecha_fin_contrato, rf.id`,
+    [clienteUsuarioId],
+  )
+  return rows.map((fila) => {
+    const { cliente, respuestaCliente, ...contrato } = aContrato(fila)
+    return { ...contrato, respuesta: respuestaCliente }
+  })
+}
+
+// Guarda lo que decide el cliente al llegar el aviso de fin de contrato: seguir otros 3 meses o terminar (CU 2.4 · A3a y A3b).
+// Solo el cliente del contrato (otro jugador recibe NO_ENCONTRADO, como si no existiera) y solo con el aviso activo; mientras siga
+// activo puede cambiar de opinión. Devuelve { resultado: 'OK' } | 'NO_ENCONTRADO' | 'YA_FINALIZADO' | 'AVISO_INACTIVO'.
+export const responderAviso = async (contratoId, clienteUsuarioId, continuar) => {
+  const cliente = await pool.connect()
+  try {
+    await cliente.query('begin')
+    await finalizarVencidos(cliente)
+    const { rows } = await cliente.query(
+      `${SELECT_CONTRATOS} where rf.id = $1 and rf.cliente_usuario_id = $2 for update of rf`,
+      [contratoId, clienteUsuarioId],
+    )
+    let resultado = { resultado: 'OK' }
+    if (!rows[0]) resultado = { resultado: 'NO_ENCONTRADO' }
+    else if (rows[0].estado !== 'VIGENTE') resultado = { resultado: 'YA_FINALIZADO' }
+    else if (!rows[0].avisoFinContrato) resultado = { resultado: 'AVISO_INACTIVO' }
+    else await cliente.query('update reserva_fija set renovar = $2 where id = $1', [contratoId, continuar])
+    await cliente.query('commit')
+    return resultado
+  } catch (error) {
+    await cliente.query('rollback').catch(() => {})
+    throw error
+  } finally {
+    cliente.release()
+  }
+}
+
+// Las fechas del período nuevo de un contrato: las semanales de su misma serie que van después del fin actual, hasta el fin actual + 3 meses
+const FECHAS_DE_LA_RENOVACION = `
+  select d::date as fecha
+    from generate_series($1::date, $2::date + make_interval(months => $3), interval '7 days') as d
+   where d::date > $2::date`
+
+// Renueva un contrato por otros 3 meses (CU 2.4 · A3a), en una transacción: comprueba que cada fecha del período nuevo esté libre y, si
+// es así, extiende `fecha_fin_contrato` y crea las reservas FIJA del período (solo las nuevas: nunca repite las que ya existen).
+// Se puede renovar con el aviso activo, sin importar si el cliente respondió desde el portal o avisó en el mostrador. Después de renovar,
+// la respuesta del cliente vuelve a quedar sin contestar para el período que viene.
+// Devuelve { resultado: 'OK', turnos, fechaFin } | 'NO_ENCONTRADO' | 'YA_FINALIZADO' | 'AVISO_INACTIVO' | 'CANCHA_INACTIVA'
+// | { resultado: 'FECHAS_OCUPADAS', fechas }.
+export const renovarContrato = async (contratoId) => {
+  const cliente = await pool.connect()
+  let datos = null
+  try {
+    await cliente.query('begin')
+    await finalizarVencidos(cliente)
+    const { rows } = await cliente.query(
+      `${SELECT_CONTRATOS} where rf.id = $1 for update of rf`,
+      [contratoId],
+    )
+    const fila = rows[0]
+    if (!fila || fila.estado !== 'VIGENTE' || !fila.avisoFinContrato || !fila.canchaActiva) {
+      await cliente.query('commit')
+      if (!fila) return { resultado: 'NO_ENCONTRADO' }
+      if (fila.estado !== 'VIGENTE') return { resultado: 'YA_FINALIZADO' }
+      if (!fila.avisoFinContrato) return { resultado: 'AVISO_INACTIVO' }
+      return { resultado: 'CANCHA_INACTIVA' }
+    }
+    datos = fila
+
+    const base = [datos.fechaInicio, datos.fechaFinContrato, MESES_ALQUILER_FIJO]
+    const { rows: ocupadas } = await cliente.query(
+      `with nuevas as (${FECHAS_DE_LA_RENOVACION})
+       select to_char(n.fecha, 'YYYY-MM-DD') as fecha from nuevas n
+        where exists (
+          select 1 from reserva r
+           where r.cancha_id = $4 and r.estado in ('PENDIENTE', 'CONFIRMADA')
+             and tsrange(r.fecha + r.hora_inicio, r.fecha + r.hora_fin) && tsrange(n.fecha + $5::time, n.fecha + $6::time))
+        order by n.fecha`,
+      [...base, datos.canchaId, datos.horaInicio, datos.horaFin],
+    )
+    if (ocupadas.length > 0) {
+      await cliente.query('rollback')
+      return { resultado: 'FECHAS_OCUPADAS', fechas: ocupadas.map((o) => o.fecha) }
+    }
+
+    const { rowCount } = await cliente.query(
+      `with nuevas as (${FECHAS_DE_LA_RENOVACION})
+       insert into reserva (cancha_id, cliente_usuario_id, reserva_fija_id, fecha, hora_inicio, hora_fin, estado, tipo, precio_aplicado)
+       select $4, $5, $6, n.fecha, $7, $8, 'CONFIRMADA', 'FIJA', $9 from nuevas n`,
+      [...base, datos.canchaId, datos.clienteUsuarioId, contratoId, datos.horaInicio, datos.horaFin, calcularPrecio(datos.precioHoraActual, datos.horaInicio, datos.horaFin)],
+    )
+    const { rows: fin } = await cliente.query(
+      `update reserva_fija set fecha_fin_contrato = fecha_fin_contrato + make_interval(months => $2), renovar = null
+        where id = $1 returning to_char(fecha_fin_contrato, 'YYYY-MM-DD') as "fechaFin"`,
+      [contratoId, MESES_ALQUILER_FIJO],
+    )
+    await cliente.query('commit')
+    return { resultado: 'OK', turnos: rowCount, fechaFin: fin[0].fechaFin }
+  } catch (error) {
+    await cliente.query('rollback').catch(() => {})
+    if (error.code !== SOLAPAMIENTO || !datos) throw error
+    // Alguien tomó una de las fechas mientras se generaban: no quedó nada a medias y se informa la lista al día
+    const { rows } = await pool.query(
+      `with nuevas as (${FECHAS_DE_LA_RENOVACION})
+       select to_char(n.fecha, 'YYYY-MM-DD') as fecha from nuevas n
+        where exists (
+          select 1 from reserva r
+           where r.cancha_id = $4 and r.estado in ('PENDIENTE', 'CONFIRMADA')
+             and tsrange(r.fecha + r.hora_inicio, r.fecha + r.hora_fin) && tsrange(n.fecha + $5::time, n.fecha + $6::time))
+        order by n.fecha`,
+      [datos.fechaInicio, datos.fechaFinContrato, MESES_ALQUILER_FIJO, datos.canchaId, datos.horaInicio, datos.horaFin],
+    )
+    return { resultado: 'FECHAS_OCUPADAS', fechas: rows.map((o) => o.fecha) }
   } finally {
     cliente.release()
   }
