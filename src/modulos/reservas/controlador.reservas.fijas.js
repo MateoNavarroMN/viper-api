@@ -1,4 +1,4 @@
-import { CONTRATOS_POR_PAGINA, cancelarContrato, crearReservaFija, finalizarVencidos, listarReservasFijas, obtenerDetalleReservaFija, obtenerReservaFija } from './modelo.reservas.fijas.js'
+import { CONTRATOS_POR_PAGINA, cancelarContrato, crearReservaFija, finalizarVencidos, listarContratosDeCliente, listarReservasFijas, obtenerDetalleReservaFija, obtenerReservaFija, renovarContrato, responderAviso } from './modelo.reservas.fijas.js'
 import { obtenerClienteReserva } from './modelo.reservas.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -134,5 +134,65 @@ export const cancelar = async (req, res) => {
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo cancelar el contrato' })
+  }
+}
+
+// GET /api/mis-contratos  (Jugador)
+// Sus alquileres fijos vigentes, con `avisoFinContrato` (true desde el día del último turno) y `respuesta` (null, CONTINUAR o FINALIZAR).
+export const misContratos = async (req, res) => {
+  try {
+    return res.status(200).json({ contratos: await listarContratosDeCliente(req.usuario.id) })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudieron obtener tus alquileres fijos' })
+  }
+}
+
+// POST /api/reservas-fijas/:id/respuesta  { continuar: boolean }  (Jugador, dueño del contrato)
+// Guarda si el cliente quiere seguir otros 3 meses o terminar. Solo con el aviso de fin de contrato activo.
+export const responder = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json({ mensaje: 'Contrato no encontrado' })
+  const { continuar } = req.body ?? {}
+  if (typeof continuar !== 'boolean') return res.status(400).json({ mensaje: 'Indicá si querés continuar o no', campo: 'continuar' })
+  try {
+    const { resultado } = await responderAviso(id, req.usuario.id, continuar)
+    if (resultado === 'NO_ENCONTRADO') return res.status(404).json({ mensaje: 'Contrato no encontrado' })
+    if (resultado === 'YA_FINALIZADO') return res.status(409).json({ mensaje: 'El contrato ya finalizó' })
+    if (resultado === 'AVISO_INACTIVO') return res.status(409).json({ mensaje: 'Todavía no podés responder: el aviso se activa el día del último turno' })
+    return res.status(200).json({
+      mensaje: continuar ? 'Listo, avisamos que querés continuar otros 3 meses.' : 'Listo, avisamos que no vas a continuar.',
+      respuesta: continuar ? 'CONTINUAR' : 'FINALIZAR',
+    })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo guardar tu respuesta' })
+  }
+}
+
+// POST /api/reservas-fijas/:id/renovar  (Recepción y Administrador)
+// Extiende el contrato 3 meses y crea los turnos del período nuevo. Solo con el aviso de fin de contrato activo.
+// Si alguna fecha del período nuevo está ocupada responde 409 con la lista y no cambia nada.
+export const renovar = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json({ mensaje: 'Contrato no encontrado' })
+  try {
+    const resultado = await renovarContrato(id)
+    if (resultado.resultado === 'NO_ENCONTRADO') return res.status(404).json({ mensaje: 'Contrato no encontrado' })
+    if (resultado.resultado === 'YA_FINALIZADO') return res.status(409).json({ mensaje: 'El contrato ya finalizó' })
+    if (resultado.resultado === 'AVISO_INACTIVO') return res.status(409).json({ mensaje: 'El contrato todavía no está por terminar: se puede renovar desde el día de su último turno' })
+    if (resultado.resultado === 'CANCHA_INACTIVA') return res.status(409).json({ mensaje: 'La cancha no está disponible' })
+    if (resultado.resultado === 'FECHAS_OCUPADAS') {
+      return res.status(409).json({ mensaje: 'Hay fechas ocupadas en el nuevo período', fechasEnConflicto: resultado.fechas })
+    }
+    const contrato = await obtenerReservaFija(id)
+    return res.status(200).json({
+      mensaje: `Contrato renovado: ${resultado.turnos} turnos más hasta el ${resultado.fechaFin.split('-').reverse().join('/')}.`,
+      contrato,
+      turnosAgregados: resultado.turnos,
+    })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo renovar el contrato' })
   }
 }
