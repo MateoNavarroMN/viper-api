@@ -1,4 +1,4 @@
-import { CONTRATOS_POR_PAGINA, crearReservaFija, finalizarVencidos, listarReservasFijas, obtenerDetalleReservaFija, obtenerReservaFija } from './modelo.reservas.fijas.js'
+import { CONTRATOS_POR_PAGINA, cancelarContrato, crearReservaFija, finalizarVencidos, listarReservasFijas, obtenerDetalleReservaFija, obtenerReservaFija } from './modelo.reservas.fijas.js'
 import { obtenerClienteReserva } from './modelo.reservas.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -107,5 +107,32 @@ export const obtener = async (req, res) => {
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo obtener el contrato' })
+  }
+}
+
+// POST /api/reservas-fijas/:id/cancelar  (Recepción y Administrador)
+// Cancela las reservas del contrato que todavía no empezaron (liberando sus franjas), conserva las que ya pasaron y deja el contrato
+// FINALIZADO. Responde { mensaje, contrato, turnosCancelados, turnosConservados }.
+export const cancelar = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json({ mensaje: 'Contrato no encontrado' })
+  try {
+    const resultado = await cancelarContrato(id)
+    if (resultado.resultado === 'NO_ENCONTRADO') return res.status(404).json({ mensaje: 'Contrato no encontrado' })
+    if (resultado.resultado === 'YA_FINALIZADO') return res.status(409).json({ mensaje: 'El contrato ya finalizó' })
+
+    const contrato = await obtenerReservaFija(id)
+    const { canceladas, conservadas } = resultado
+    return res.status(200).json({
+      mensaje: canceladas === 0
+        ? 'Contrato cancelado. No quedaban turnos por delante.'
+        : `Contrato cancelado. Se liberaron ${canceladas} ${canceladas === 1 ? 'turno' : 'turnos'}.`,
+      contrato,
+      turnosCancelados: canceladas,
+      turnosConservados: conservadas,
+    })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo cancelar el contrato' })
   }
 }

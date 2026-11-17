@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { autenticar, autorizar } from '../../middlewares/autenticacion.middleware.js'
-import { crear, listar, obtener } from './controlador.reservas.fijas.js'
+import { cancelar, crear, listar, obtener } from './controlador.reservas.fijas.js'
 
 const router = Router()
 
@@ -8,5 +8,6 @@ const router = Router()
 router.post('/', autenticar, autorizar('RECEPCIONISTA'), crear)
 router.get('/', autenticar, autorizar('RECEPCIONISTA'), listar)
 router.get('/:id', autenticar, autorizar('RECEPCIONISTA'), obtener)
+router.post('/:id/cancelar', autenticar, autorizar('RECEPCIONISTA'), cancelar)
 
 export default router
