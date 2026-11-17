@@ -191,3 +191,44 @@ export const listarReservasFijas = async ({ estado = null, q = '', pagina = 1 },
   )
   return { total: cuenta[0].total, contratos: rows.map(aContrato) }
 }
+
+// Cancela un contrato de alquiler fijo (CU 2.4 · A2), en una transacción: pasa a CANCELADA las reservas del contrato que todavía no
+// empezaron (sus franjas quedan libres, porque la restricción de superposición solo mira PENDIENTE y CONFIRMADA), conserva las que ya
+// empezaron o pasaron, y marca el contrato FINALIZADO con `cancelado_en`. El contrato se bloquea mientras se cancela, así dos pedidos
+// a la vez no lo cancelan dos veces. Los contratos cuya fecha de fin ya pasó se finalizan antes, de modo que tampoco se cancelan.
+// Devuelve { resultado: 'OK', canceladas, conservadas } | 'NO_ENCONTRADO' | 'YA_FINALIZADO'.
+export const cancelarContrato = async (contratoId) => {
+  const cliente = await pool.connect()
+  try {
+    await cliente.query('begin')
+    await finalizarVencidos(cliente)
+    const { rows } = await cliente.query('select estado from reserva_fija where id = $1 for update', [contratoId])
+    // Si no hay nada que cancelar se confirma igual la transacción: así queda guardada la finalización de los vencidos
+    if (!rows[0]) {
+      await cliente.query('commit')
+      return { resultado: 'NO_ENCONTRADO' }
+    }
+    if (rows[0].estado !== 'VIGENTE') {
+      await cliente.query('commit')
+      return { resultado: 'YA_FINALIZADO' }
+    }
+    const { rowCount: canceladas } = await cliente.query(
+      `update reserva set estado = 'CANCELADA'
+        where reserva_fija_id = $1 and estado in ('PENDIENTE', 'CONFIRMADA')
+          and (fecha + hora_inicio) at time zone 'America/Argentina/Cordoba' > now()`,
+      [contratoId],
+    )
+    await cliente.query(`update reserva_fija set estado = 'FINALIZADO', cancelado_en = now() where id = $1`, [contratoId])
+    const { rows: conservadas } = await cliente.query(
+      `select count(*)::int as total from reserva where reserva_fija_id = $1 and estado = 'CONFIRMADA'`,
+      [contratoId],
+    )
+    await cliente.query('commit')
+    return { resultado: 'OK', canceladas, conservadas: conservadas[0].total }
+  } catch (error) {
+    await cliente.query('rollback').catch(() => {})
+    throw error
+  } finally {
+    cliente.release()
+  }
+}
