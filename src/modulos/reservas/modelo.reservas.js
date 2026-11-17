@@ -47,6 +47,11 @@ const enTransaccion = async (db, trabajo) => {
   }
 }
 
+// Serializa a quienes escriben reservas de una misma cancha: se toma la fila de la cancha antes de leer y de insertar. Sin esto, dos
+// altas simultáneas por la misma franja se esperan mutuamente dentro de la restricción de superposición y la base aborta a una
+// con un deadlock (error 500) en lugar de rechazarla con «franja ocupada». El bloqueo dura hasta el final de la transacción.
+export const bloquearCancha = (db, canchaId) => db.query('select 1 from cancha where id = $1 for update', [canchaId])
+
 // Canchas activas de una disciplina ('TENIS' | 'PADEL'), en el orden en que las usa el scheduler
 export const listarCanchas = async (disciplina, db = pool) => {
   const { rows } = await db.query(
@@ -122,7 +127,7 @@ export const obtenerReservaDetalle = async (reservaId, db = pool) => {
             c.id as "canchaId", c.nombre as "canchaNombre", c.deporte, c.tipo_superficie as "tipoSuperficie", c.precio_hora as "precioHora",
             u.id as "clienteId", u.nombre as "clienteNombre", u.apellido as "clienteApellido", u.email as "clienteEmail", u.telefono as "clienteTelefono",
             r.nombre_contacto as "nombreContacto",
-                        rf.id as "contratoId", rf.dia_semana as "diaSemana", to_char(rf.fecha_inicio, 'YYYY-MM-DD') as "contratoInicio", to_char(rf.fecha_fin_contrato, 'YYYY-MM-DD') as "contratoFin", rf.estado as "contratoEstado",
+            rf.id as "contratoId", rf.dia_semana as "diaSemana", to_char(rf.fecha_inicio, 'YYYY-MM-DD') as "contratoInicio", to_char(rf.fecha_fin_contrato, 'YYYY-MM-DD') as "contratoFin", rf.estado as "contratoEstado",
             t.id as "torneoId", t.nombre as "torneoNombre"
        from reserva r
        join cancha c on c.id = r.cancha_id
@@ -159,7 +164,6 @@ export const obtenerReservaDetalle = async (reservaId, db = pool) => {
     segundosParaInicio: Number(r.segundosParaInicio),
   }
 }
-
 
 // Reservas vigentes de las canchas dadas dentro de un período: es la lista `ocupadas` que recibe el scheduler
 export const listarOcupadas = async (canchaIds, desde, hasta, db = pool, ignorarReservaId = null) => {
@@ -212,6 +216,7 @@ export const cancelarReservasDelTorneo = async (torneoId, db = pool) => {
 // Devuelve { resultado: 'OK', reserva } | 'FRANJA_OCUPADA' | 'CANCHA_INVALIDA' | 'PARTIDO_NO_ENCONTRADO'.
 export const reservarParaPartido = (partidoId, { canchaId, fecha, horaInicio, horaFin }, db = pool) =>
   enTransaccion(db, async (tx) => {
+    await bloquearCancha(tx, canchaId)
     const { rows } = await tx.query(
       `select p.reserva_id as "reservaId", c.id is not null as "canchaValida"
          from partido p
@@ -250,7 +255,8 @@ export const reservarParaPartido = (partidoId, { canchaId, fecha, horaInicio, ho
     if (error.franjaOcupada) return { resultado: 'FRANJA_OCUPADA' }
     throw error
   })
-  // Hora de fin de un turno: sumarMinutos('19:00', 60) → '20:00'
+
+// Hora de fin de un turno: sumarMinutos('19:00', 60) → '20:00'
 const sumarMinutos = (hora, minutos) => {
   const total = Number(hora.slice(0, 2)) * 60 + Number(hora.slice(3, 5)) + minutos
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
@@ -270,6 +276,7 @@ export const crearReserva = (
   db = pool,
 ) =>
   enTransaccion(db, async (tx) => {
+    await bloquearCancha(tx, canchaId)
     await expirarVencidas(tx)
 
     const cancha = await obtenerCancha(canchaId, tx)
@@ -354,7 +361,7 @@ export const confirmarReserva = (reservaId, operadorUsuarioId, metodoPago, db = 
     return { resultado: { CONFIRMADA: 'YA_PAGADA', EXPIRADA: 'EXPIRADA', CANCELADA: 'CANCELADA' }[actual[0].estado] }
   })
 
-  // Cancela una reserva por decisión de un usuario (CU 2.5): la pasa a CANCELADA y su franja queda libre. Bloquea la fila mientras decide,
+// Cancela una reserva por decisión de un usuario (CU 2.5): la pasa a CANCELADA y su franja queda libre. Bloquea la fila mientras decide,
 // así dos cancelaciones (o una cancelación y un cobro) simultáneas no se pisan. Solo se cancela una PENDIENTE o CONFIRMADA.
 // Si es de un alquiler fijo, cancela solo esa fecha: el contrato y las demás fechas no se tocan.
 // Devuelve { resultado: 'OK', estadoPrevio, precioAplicado } | { resultado: 'NO_ENCONTRADA' } | { resultado: 'NO_CANCELABLE', estado }.
@@ -376,6 +383,8 @@ export const cancelarPorDecision = (reservaId, db = pool) =>
 // | 'FUERA_DE_HORARIO' | 'FECHA_PASADA' | 'FRANJA_OCUPADA'.
 export const modificarHorario = (reservaId, { fecha, horaInicio, horaFin }, db = pool) =>
   enTransaccion(db, async (tx) => {
+    const { rows: previa } = await tx.query('select cancha_id as "canchaId" from reserva where id = $1', [reservaId])
+    if (previa[0]) await bloquearCancha(tx, previa[0].canchaId)
     await expirarVencidas(tx)
 
     const { rows } = await tx.query(
@@ -419,7 +428,7 @@ export const modificarHorario = (reservaId, { fecha, horaInicio, horaFin }, db =
     throw error
   })
 
-  // Las otras canchas activas del mismo deporte donde la franja de la reserva está libre, con el precio que tendría en cada una
+// Las otras canchas activas del mismo deporte donde la franja de la reserva está libre, con el precio que tendría en cada una
 // (CU 2.5 · A2). Devuelve null si la reserva no existe.
 export const canchasParaReasignar = async (reservaId, db = pool) => {
   const { rows } = await db.query(
@@ -459,6 +468,9 @@ export const canchasParaReasignar = async (reservaId, db = pool) => {
 // | 'OTRO_DEPORTE' | 'MISMA_CANCHA' | 'FRANJA_OCUPADA'.
 export const reasignarCancha = (reservaId, canchaNuevaId, db = pool) =>
   enTransaccion(db, async (tx) => {
+    const { rows: previa } = await tx.query('select cancha_id as "canchaId" from reserva where id = $1', [reservaId])
+    // Las dos canchas se bloquean siempre en el mismo orden, para que dos reasignaciones cruzadas no se esperen entre sí
+    for (const id of [...new Set([previa[0]?.canchaId, canchaNuevaId].filter((x) => typeof x === 'string' && /^[0-9a-f-]{36}$/i.test(x)))].sort()) await bloquearCancha(tx, id)
     await expirarVencidas(tx)
 
     const { rows } = await tx.query(

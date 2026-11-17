@@ -1,5 +1,5 @@
 import { pool } from '../../config/conexion.bd.js'
-import { HORA_APERTURA, HORA_CIERRE, MESES_ALQUILER_FIJO, calcularPrecio, expirarVencidas, obtenerCancha } from './modelo.reservas.js'
+import { HORA_APERTURA, HORA_CIERRE, MESES_ALQUILER_FIJO, bloquearCancha, calcularPrecio, expirarVencidas, obtenerCancha } from './modelo.reservas.js'
 
 
 // Código con el que Postgres informa que se violó una restricción EXCLUDE (dos reservas vigentes que se pisan)
@@ -44,6 +44,7 @@ export const crearReservaFija = async ({ canchaId, clienteUsuarioId, diaSemana, 
   const cliente = await pool.connect()
   try {
     await cliente.query('begin')
+    await bloquearCancha(cliente, canchaId)
     await expirarVencidas(cliente)
 
     const cancha = await obtenerCancha(canchaId, cliente)
@@ -314,6 +315,7 @@ export const renovarContrato = async (contratoId) => {
       return { resultado: 'CANCHA_INACTIVA' }
     }
     datos = fila
+    await bloquearCancha(cliente, datos.canchaId)
 
     const base = [datos.fechaInicio, datos.fechaFinContrato, MESES_ALQUILER_FIJO]
     const { rows: ocupadas } = await cliente.query(
@@ -363,5 +365,3 @@ export const renovarContrato = async (contratoId) => {
     cliente.release()
   }
 }
-
-

@@ -48,7 +48,7 @@ export const cerrarInscripciones = (id) =>
   }))
 
 // A4: cualquiera de los cuatro primeros estados → CANCELADO. Anula todas las inscripciones ACTIVAS.
-// Las reservas de tipo Torneo se cancelan acá cuando existan (M3-BE-12, vía partido.reserva_id).
+// Las reservas de tipo Torneo de sus partidos también se cancelan, así sus franjas quedan libres en la grilla.
 // Los reembolsos se gestionan fuera del sistema.
 export const cancelarTorneo = (id) =>
   transicionar(id, 'CANCELADO', async (cliente, torneoId) => {
@@ -56,7 +56,15 @@ export const cancelarTorneo = (id) =>
       "update inscripcion set estado = 'ANULADA' where torneo_id = $1 and estado = 'ACTIVA'",
       [torneoId]
     )
-    return { inscripcionesAnuladas: rowCount }
+    // Solo las que todavía no empezaron: lo que ya se jugó queda como historial
+    const { rowCount: reservasCanceladas } = await cliente.query(
+      `update reserva set estado = 'CANCELADA'
+        where id in (select reserva_id from partido where torneo_id = $1 and reserva_id is not null)
+          and estado in ('PENDIENTE', 'CONFIRMADA')
+          and (fecha + hora_inicio) at time zone 'America/Argentina/Cordoba' > now()`,
+      [torneoId]
+    )
+    return { inscripcionesAnuladas: rowCount, reservasCanceladas }
   })
 
 // Lo que el organizador ve antes de confirmar el cierre (A3): cuántas inscripciones activas hay y cuántas
