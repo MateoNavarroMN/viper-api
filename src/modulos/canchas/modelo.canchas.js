@@ -1,6 +1,8 @@
 import { pool } from '../../config/conexion.bd.js'
 import { DURACION_TURNO_MINUTOS, expirarVencidas, listarCanchas } from '../reservas/modelo.reservas.js'
 import { HORARIO } from '../torneos/scheduler.torneos.js'
+import { pareja } from '../calendario/modelo.calendario.js'
+import { estadosVisibles } from '../torneos/acciones.torneos.js'
 
 const aMinutos = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5))
 const aHora = (minutos) => `${String(Math.floor(minutos / 60)).padStart(2, '0')}:${String(minutos % 60).padStart(2, '0')}`
@@ -46,27 +48,38 @@ const armarFranjas = (ocupadas, fecha, ahora, conDetalle) => {
   return franjas
 }
 
-// Disponibilidad de las canchas de una disciplina en una fecha: por cancha, los datos y el precio, las franjas ocupadas
-// (`ocupadas`), las libres (`libres`) y la grilla en turnos (`franjas`). Lo que se ve de cada ocupación depende del rol:
 //   JUGADOR                  → solo el horario
-//   ORGANIZADOR              → además reserva, tipo, estado y, si es de un torneo, cuál (sin datos del cliente)
-//   RECEPCIONISTA / ADMIN.   → además el cliente y el precio aplicado
-// `ahora` ({ fecha, hora }) solo se pasa en las pruebas; normalmente se toma de la base, en hora de Córdoba.
+//   ORGANIZADOR              → además reserva, tipo (OCASIONAL = alquiler, FIJA, TORNEO), estado y, si es de un torneo, cuál y
+//                              entre quiénes juegan (sin datos del cliente)
+//   RECEPCIONISTA / ADMIN.   → además el cliente, el precio aplicado y, si es de un alquiler fijo, el contrato
+// Un torneo que todavía se está armando (PLANIFICADO) no lo ve el Recepcionista: su franja figura ocupada, sin decir de qué torneo es.
 export const disponibilidadDelDia = async (disciplina, fecha, rol = 'ORGANIZADOR', db = pool, ahora = null) => {
   // Antes de leer: las pendientes con el plazo vencido dejan la franja libre
   await expirarVencidas(db)
   const momento = ahora ?? (await ahoraEnCordoba(db))
   const canchas = await listarCanchas(disciplina, db)
-  const { rows } = await db.query(
+ const { rows } = await db.query(
     `select r.cancha_id as "canchaId", r.id as "reservaId", r.tipo, r.estado,
             to_char(r.hora_inicio, 'HH24:MI') as "horaInicio", to_char(r.hora_fin, 'HH24:MI') as "horaFin",
             r.precio_aplicado as "precioAplicado",
-            p.id as "partidoId", t.nombre as torneo,
+            p.id as "partidoId", t.id as "torneoId", t.nombre as torneo, t.estado as "torneoEstado", r.reserva_fija_id as "contratoId",
+            ul.nombre as "localNombre", ul.apellido as "localApellido", ulc.nombre as "localCompaneroNombre", ulc.apellido as "localCompaneroApellido",
+            uv.nombre as "visitanteNombre", uv.apellido as "visitanteApellido", uvc.nombre as "visitanteCompaneroNombre", uvc.apellido as "visitanteCompaneroApellido",
             u.id as "clienteId", u.nombre as "clienteNombre", u.apellido as "clienteApellido", u.email as "clienteEmail",
             r.nombre_contacto as "nombreContacto"
        from reserva r
        left join partido p on p.reserva_id = r.id
        left join torneo t on t.id = p.torneo_id
+       left join inscripcion il on il.id = p.local_inscripcion_id
+       left join jugador jl on jl.id = il.titular_jugador_id
+       left join usuario ul on ul.id = jl.usuario_id
+       left join jugador jlc on jlc.id = il.companero_jugador_id
+       left join usuario ulc on ulc.id = jlc.usuario_id
+       left join inscripcion iv on iv.id = p.visitante_inscripcion_id
+       left join jugador jv on jv.id = iv.titular_jugador_id
+       left join usuario uv on uv.id = jv.usuario_id
+       left join jugador jvc on jvc.id = iv.companero_jugador_id
+       left join usuario uvc on uvc.id = jvc.usuario_id
        left join usuario u on u.id = r.cliente_usuario_id
       where r.cancha_id = any($1) and r.fecha = $2 and r.estado in ('PENDIENTE', 'CONFIRMADA')
       order by r.hora_inicio`,
@@ -76,15 +89,21 @@ export const disponibilidadDelDia = async (disciplina, fecha, rol = 'ORGANIZADOR
   const esPersonal = rol === 'RECEPCIONISTA' || rol === 'ADMINISTRADOR'
   const verOcupacion = (r) => {
     if (rol === 'JUGADOR') return { horaInicio: r.horaInicio, horaFin: r.horaFin }
+    // Del torneo y sus rivales solo se informa lo que el rol puede ver (A1): el resto de la franja igual figura ocupada
+    const verTorneo = r.torneoEstado && estadosVisibles(rol).includes(r.torneoEstado)
+    const rival = (lado) => (verTorneo && r[`${lado}Apellido`]
+      ? pareja(r[`${lado}Nombre`], r[`${lado}Apellido`], r[`${lado}CompaneroNombre`], r[`${lado}CompaneroApellido`])
+      : null)
     const base = {
       reservaId: r.reservaId, tipo: r.tipo, estado: r.estado, horaInicio: r.horaInicio, horaFin: r.horaFin,
-      partidoId: r.partidoId, torneo: r.torneo,
+      partidoId: verTorneo ? r.partidoId : null, torneoId: verTorneo ? r.torneoId : null, torneo: verTorneo ? r.torneo : null,
+      local: rival('local'), visitante: rival('visitante'),
     }
     if (!esPersonal) return base
     const cliente = r.clienteId
       ? { id: r.clienteId, nombre: r.clienteNombre, apellido: r.clienteApellido, email: r.clienteEmail }
       : r.nombreContacto ? { id: null, nombre: r.nombreContacto, apellido: '', email: null } : null
-    return { ...base, cliente, precioAplicado: r.precioAplicado === null ? null : Number(r.precioAplicado) }
+    return { ...base, contratoId: r.contratoId, cliente, precioAplicado: r.precioAplicado === null ? null : Number(r.precioAplicado) }
   }
 
   return {
