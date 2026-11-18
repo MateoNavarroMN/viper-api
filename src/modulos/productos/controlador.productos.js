@@ -1,5 +1,7 @@
 import { crearProducto, listarProductos } from './modelo.productos.js'
 import { CATEGORIAS, validarProducto } from './validaciones.productos.js'
+import { ERROR_TIPO_IMAGEN, tipoDeImagen } from './imagen.productos.js'
+import { borrarImagenProducto, subirImagenProducto } from '../../config/almacenamiento.supabase.js'
 
 const ESTADOS = ['ACTIVO', 'INACTIVO']
 const TAMANIO_POR_DEFECTO = 10
@@ -38,20 +40,29 @@ export const listar = async (req, res) => {
   }
 }
 
-// POST /api/productos  { nombre, precio, categoria, stockActual, disponibleParaAlquiler?, precioAlquiler? }  (CU 5.1 · pasos 6 a 9)
-// La imagen se agrega en M5-BE-03.
+// POST /api/productos  (CU 5.1 · pasos 6 a 9). JSON, o multipart/form-data con los mismos campos y el archivo opcional «imagen».
+// { nombre, precio, categoria, stockActual, disponibleParaAlquiler?, precioAlquiler? }
 export const crear = async (req, res) => {
   const { error, datos } = validarProducto(req.body)
   if (error) return res.status(400).json(error) // 7a
 
+  let imagenUrl = null
   try {
-    const r = await crearProducto(datos)
+    if (req.file) {
+      const tipo = tipoDeImagen(req.file.buffer)
+      if (!tipo) return res.status(400).json(ERROR_TIPO_IMAGEN) // 7b: se puede reenviar sin imagen
+      imagenUrl = await subirImagenProducto(req.file.buffer, tipo)
+    }
+
+    const r = await crearProducto({ ...datos, imagenUrl })
     if (r.resultado === 'DUPLICADO') { // 8a
+      await borrarImagenProducto(imagenUrl) // no deja un archivo huérfano
       return res.status(409).json({ mensaje: 'Ya existe un producto activo con ese nombre en la categoría', campo: 'nombre' })
     }
     return res.status(201).json({ mensaje: 'Producto registrado correctamente', producto: r.producto })
   } catch (e) {
     console.error(e)
+    await borrarImagenProducto(imagenUrl) // si la base falló después de subir la imagen, se elimina
     return res.status(500).json({ mensaje: 'No se pudo registrar el producto' })
   }
 }
