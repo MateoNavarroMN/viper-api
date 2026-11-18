@@ -125,3 +125,23 @@ export const disponibilidadDelDia = async (disciplina, fecha, rol = 'ORGANIZADOR
     }),
   }
 }
+
+// ── Canchas y tarifas (solo Administrador) ────────────────────────────────────────────────────────────────────────
+
+export const SELECT_CANCHAS = `
+  select c.id, c.nombre, c.deporte, c.tipo_superficie as "tipoSuperficie", c.precio_hora as "precioHora", c.activa,
+         (select count(*)::int from reserva r
+           where r.cancha_id = c.id and r.estado in ('PENDIENTE', 'CONFIRMADA')
+             and (r.fecha + r.hora_inicio) at time zone 'America/Argentina/Cordoba' > now()) as "reservasFuturas"
+    from cancha c`
+
+const aCancha = (fila) => ({ ...fila, precioHora: Number(fila.precioHora) })
+
+// Todas las canchas, activas e inactivas, con las reservas pendientes o confirmadas que todavía no empezaron (alquileres fijos y
+// partidos de torneo incluidos). Tenis antes que Pádel y, dentro de cada deporte, por nombre. Primero se vencen las pendientes
+// sin pago para que no cuenten como futuras.
+export const listarTodasLasCanchas = async (db = pool) => {
+  await expirarVencidas(db)
+  const { rows } = await db.query(`${SELECT_CANCHAS} order by c.deporte, c.nombre`)
+  return rows.map(aCancha)
+}
