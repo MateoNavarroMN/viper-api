@@ -178,3 +178,35 @@ export const crearCancha = async ({ nombre, deporte, tipoSuperficie, precioHora 
     throw error
   }
 }
+
+// Edita nombre, superficie y/o precio por hora. Se bloquea la cancha mientras se cambia: una reserva que se está creando justo ahora
+// toma el precio de antes o el de después, nunca uno a medias. Solo toca la tabla `cancha`: las reservas ya creadas conservan su
+// `precio_aplicado`. Devuelve { resultado: 'OK', cancha, precioAnterior } | 'NO_ENCONTRADA' | 'NOMBRE_REPETIDO'.
+export const actualizarCancha = async (id, cambios, db = pool) => {
+  const cliente = await db.connect()
+  try {
+    await cliente.query('begin')
+    const { rows } = await cliente.query('select precio_hora as "precioHora" from cancha where id = $1 for update', [id])
+    if (!rows[0]) {
+      await cliente.query('rollback')
+      return { resultado: 'NO_ENCONTRADA' }
+    }
+    if (cambios.nombre !== undefined && (await existeNombre(cambios.nombre, id, cliente))) {
+      await cliente.query('rollback')
+      return { resultado: 'NOMBRE_REPETIDO' }
+    }
+    await cliente.query(
+      `update cancha set nombre = coalesce($2, nombre), tipo_superficie = coalesce($3, tipo_superficie), precio_hora = coalesce($4, precio_hora)
+        where id = $1`,
+      [id, cambios.nombre ?? null, cambios.tipoSuperficie ?? null, cambios.precioHora ?? null],
+    )
+    await cliente.query('commit')
+    return { resultado: 'OK', cancha: await obtenerCanchaConReservas(id, db), precioAnterior: Number(rows[0].precioHora) }
+  } catch (error) {
+    await cliente.query('rollback')
+    if (error.code === '23505') return { resultado: 'NOMBRE_REPETIDO' }
+    throw error
+  } finally {
+    cliente.release()
+  }
+}
