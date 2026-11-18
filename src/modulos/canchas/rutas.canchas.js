@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { autenticar, autorizar } from '../../middlewares/autenticacion.middleware.js'
-import { disponibilidad, listar } from './controlador.canchas.js'
+import { crear, disponibilidad, listar } from './controlador.canchas.js'
 
 const router = Router()
 
@@ -9,5 +9,7 @@ router.get('/disponibilidad', autenticar, autorizar('JUGADOR', 'RECEPCIONISTA', 
 
 // Canchas y tarifas: solo el Administrador. Las rutas con :id van después de /disponibilidad para no pisarla.
 router.get('/', autenticar, autorizar('ADMINISTRADOR'), listar)
+
+router.post('/', autenticar, autorizar('ADMINISTRADOR'), crear)
 
 export default router

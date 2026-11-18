@@ -1,4 +1,5 @@
-import { disponibilidadDelDia, listarTodasLasCanchas } from './modelo.canchas.js'
+import { crearCancha, disponibilidadDelDia, listarTodasLasCanchas } from './modelo.canchas.js'
+import { validarCancha } from './validaciones.canchas.js'
 
 const DISCIPLINAS = ['TENIS', 'PADEL']
 
@@ -33,5 +34,23 @@ export const listar = async (req, res) => {
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudieron obtener las canchas' })
+  }
+}
+
+const NOMBRE_REPETIDO = { mensaje: 'Ya existe otra cancha con ese nombre', campo: 'nombre' }
+
+// POST /api/canchas  { nombre, deporte, tipoSuperficie, precioHora }
+// Registra una cancha activa: aparece en la grilla de disponibilidad con sus franjas libres. Un precio en cero se acepta.
+export const crear = async (req, res) => {
+  const { error, datos } = validarCancha(req.body, { completo: true })
+  if (error) return res.status(400).json(error)
+
+  try {
+    const r = await crearCancha(datos)
+    if (r.resultado === 'NOMBRE_REPETIDO') return res.status(409).json(NOMBRE_REPETIDO)
+    return res.status(201).json({ mensaje: 'Cancha registrada correctamente', cancha: r.cancha })
+  } catch (e) {
+    console.error(e)
+    return res.status(500).json({ mensaje: 'No se pudo registrar la cancha' })
   }
 }
