@@ -1,4 +1,4 @@
-import { crearCancha, disponibilidadDelDia, listarTodasLasCanchas } from './modelo.canchas.js'
+import { actualizarCancha, crearCancha, disponibilidadDelDia, listarTodasLasCanchas, obtenerCanchaConReservas } from './modelo.canchas.js'
 import { validarCancha } from './validaciones.canchas.js'
 
 const DISCIPLINAS = ['TENIS', 'PADEL']
@@ -52,5 +52,46 @@ export const crear = async (req, res) => {
   } catch (e) {
     console.error(e)
     return res.status(500).json({ mensaje: 'No se pudo registrar la cancha' })
+  }
+}
+
+const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const NO_ENCONTRADA = { mensaje: 'Cancha no encontrada' }
+
+// GET /api/canchas/:id  → la cancha con sus reservas futuras (precarga el formulario y arma el «Resumen del cambio»)
+export const obtener = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json(NO_ENCONTRADA)
+  try {
+    const cancha = await obtenerCanchaConReservas(id)
+    return cancha ? res.status(200).json({ cancha }) : res.status(404).json(NO_ENCONTRADA)
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo obtener la cancha' })
+  }
+}
+
+// PATCH /api/canchas/:id  { nombre?, tipoSuperficie?, precioHora? }
+// El deporte y el estado no se modifican por acá (si vienen en el cuerpo se ignoran). El precio nuevo rige para las reservas que se
+// creen desde ahora: las que ya existen conservan su precio.
+export const editar = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json(NO_ENCONTRADA)
+  const { error, datos } = validarCancha(req.body, { completo: false })
+  if (error) return res.status(400).json(error)
+
+  try {
+    const r = await actualizarCancha(id, datos)
+    if (r.resultado === 'NO_ENCONTRADA') return res.status(404).json(NO_ENCONTRADA)
+    if (r.resultado === 'NOMBRE_REPETIDO') return res.status(409).json(NOMBRE_REPETIDO)
+    return res.status(200).json({
+      mensaje: 'Cancha actualizada. El nuevo precio rige para las reservas que se creen desde ahora',
+      cancha: r.cancha,
+      precioAnterior: r.precioAnterior,
+      reservasFuturas: r.cancha.reservasFuturas,
+    })
+  } catch (e) {
+    console.error(e)
+    return res.status(500).json({ mensaje: 'No se pudo actualizar la cancha' })
   }
 }
