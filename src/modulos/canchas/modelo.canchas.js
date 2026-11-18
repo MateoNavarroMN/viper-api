@@ -53,12 +53,26 @@ const armarFranjas = (ocupadas, fecha, ahora, conDetalle) => {
 //                              entre quiénes juegan (sin datos del cliente)
 //   RECEPCIONISTA / ADMIN.   → además el cliente, el precio aplicado y, si es de un alquiler fijo, el contrato
 // Un torneo que todavía se está armando (PLANIFICADO) no lo ve el Recepcionista: su franja figura ocupada, sin decir de qué torneo es.
-export const disponibilidadDelDia = async (disciplina, fecha, rol = 'ORGANIZADOR', db = pool, ahora = null) => {
+export const disponibilidadDelDia = async (disciplina, fecha, rol = 'ORGANIZADOR', db = pool, ahora = null, incluirInactivas = false) => {
   // Antes de leer: las pendientes con el plazo vencido dejan la franja libre
   await expirarVencidas(db)
   const momento = ahora ?? (await ahoraEnCordoba(db))
-  const canchas = await listarCanchas(disciplina, db)
- const { rows } = await db.query(
+  const esPersonal = rol === 'RECEPCIONISTA' || rol === 'ADMINISTRADOR'
+  const activas = await listarCanchas(disciplina, db)
+  // Solo para el personal que lo pide (la grilla del club): una cancha desactivada que ese día todavía tiene reservas vigentes, para
+  // poder cancelarlas o pasarlas a otra cancha. Aparece sin turnos libres: no admite reservas nuevas.
+  const inactivas = esPersonal && incluirInactivas
+    ? (await db.query(
+        `select c.id, c.nombre, c.deporte, c.tipo_superficie as "tipoSuperficie", c.precio_hora as "precioHora"
+           from cancha c
+          where not c.activa and c.deporte = $1
+            and exists (select 1 from reserva r where r.cancha_id = c.id and r.fecha = $2 and r.estado in ('PENDIENTE', 'CONFIRMADA'))
+          order by c.nombre`,
+        [disciplina, fecha],
+      )).rows.map((c) => ({ ...c, precioHora: Number(c.precioHora), activa: false }))
+    : []
+  const canchas = [...activas.map((c) => ({ ...c, activa: true })), ...inactivas]
+  const { rows } = await db.query(
     `select r.cancha_id as "canchaId", r.id as "reservaId", r.tipo, r.estado,
             to_char(r.hora_inicio, 'HH24:MI') as "horaInicio", to_char(r.hora_fin, 'HH24:MI') as "horaFin",
             r.precio_aplicado as "precioAplicado",
@@ -86,7 +100,6 @@ export const disponibilidadDelDia = async (disciplina, fecha, rol = 'ORGANIZADOR
     [canchas.map((c) => c.id), fecha],
   )
 
-  const esPersonal = rol === 'RECEPCIONISTA' || rol === 'ADMINISTRADOR'
   const verOcupacion = (r) => {
     if (rol === 'JUGADOR') return { horaInicio: r.horaInicio, horaFin: r.horaFin }
     // Del torneo y sus rivales solo se informa lo que el rol puede ver (A1): el resto de la franja igual figura ocupada
@@ -118,9 +131,11 @@ export const disponibilidadDelDia = async (disciplina, fecha, rol = 'ORGANIZADOR
         deporte: cancha.deporte,
         tipoSuperficie: cancha.tipoSuperficie,
         precioHora: cancha.precioHora,
+        activa: cancha.activa,
         ocupadas,
-        libres: franjasLibres(ocupadas),
-        franjas: armarFranjas(ocupadas, fecha, momento, rol !== 'JUGADOR'),
+        libres: cancha.activa ? franjasLibres(ocupadas) : [],
+        // Una cancha desactivada no ofrece turnos: lo que no está reservado figura NO_DISPONIBLE
+        franjas: armarFranjas(ocupadas, fecha, momento, rol !== 'JUGADOR').map((f) => (!cancha.activa && f.estado === 'LIBRE' ? { ...f, estado: 'NO_DISPONIBLE' } : f)),
       }
     }),
   }
