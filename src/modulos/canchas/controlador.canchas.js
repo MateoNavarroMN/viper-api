@@ -1,4 +1,4 @@
-import { disponibilidadDelDia } from './modelo.canchas.js'
+import { disponibilidadDelDia, listarTodasLasCanchas } from './modelo.canchas.js'
 
 const DISCIPLINAS = ['TENIS', 'PADEL']
 
@@ -23,5 +23,15 @@ export const disponibilidad = async (req, res) => {
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo obtener la disponibilidad de las canchas' })
+  }
+}
+
+// GET /api/canchas (solo Administrador): todas las canchas con sus reservas futuras
+export const listar = async (req, res) => {
+  try {
+    return res.status(200).json({ canchas: await listarTodasLasCanchas() })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudieron obtener las canchas' })
   }
 }
