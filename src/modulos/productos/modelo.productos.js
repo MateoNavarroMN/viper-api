@@ -51,10 +51,10 @@ export const listarProductos = async ({ q, categoria, estado, pagina, tamanio },
 export const crearProducto = async (datos, db = pool) => {
   try {
     const { rows } = await db.query(
-      `insert into producto (nombre, precio, categoria, stock_actual, disponible_para_alquiler, precio_alquiler)
-       values ($1, $2, $3, $4, $5, $6)
+      `insert into producto (nombre, precio, categoria, stock_actual, disponible_para_alquiler, precio_alquiler, imagen_url)
+       values ($1, $2, $3, $4, $5, $6, $7)
        returning ${COLUMNAS}`,
-      [datos.nombre, datos.precio, datos.categoria, datos.stockActual, datos.disponibleParaAlquiler, datos.precioAlquiler]
+      [datos.nombre, datos.precio, datos.categoria, datos.stockActual, datos.disponibleParaAlquiler, datos.precioAlquiler, datos.imagenUrl ?? null]
     )
     return { resultado: 'CREADO', producto: aProducto(rows[0]) }
   } catch (error) {
