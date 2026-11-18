@@ -29,6 +29,7 @@ import rutasReservas from './modulos/reservas/rutas.reservas.js'
 import rutasMisReservas from './modulos/reservas/rutas.mis.reservas.js'
 import rutasReservasFijas from './modulos/reservas/rutas.reservas.fijas.js'
 import rutasMisContratos from './modulos/reservas/rutas.mis.contratos.js'
+import rutasProductos from './modulos/productos/rutas.productos.js'
 
 const app = express()
 
@@ -80,7 +81,7 @@ app.use('/api/reservas', rutasReservas)
 app.use('/api/mis-reservas', rutasMisReservas)
 app.use('/api/reservas-fijas', rutasReservasFijas)
 app.use('/api/mis-contratos', rutasMisContratos)
-
+app.use('/api/productos', rutasProductos)
 
 // Ruta no encontrada
 app.use((req, res) => {
