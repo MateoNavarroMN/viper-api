@@ -145,3 +145,36 @@ export const listarTodasLasCanchas = async (db = pool) => {
   const { rows } = await db.query(`${SELECT_CANCHAS} order by c.deporte, c.nombre`)
   return rows.map(aCancha)
 }
+
+// Una cancha con sus reservas futuras, o null si no existe
+export const obtenerCanchaConReservas = async (id, db = pool) => {
+  await expirarVencidas(db)
+  const { rows } = await db.query(`${SELECT_CANCHAS} where c.id = $1`, [id])
+  return rows[0] ? aCancha(rows[0]) : null
+}
+
+// ¿Hay otra cancha con ese nombre (sin distinguir mayúsculas ni espacios de los bordes)? `exceptoId` deja afuera a la que se edita.
+export const existeNombre = async (nombre, exceptoId = null, db = pool) => {
+  const { rows } = await db.query(
+    "select 1 from cancha where lower(btrim(nombre)) = lower(btrim($1)) and ($2::uuid is null or id <> $2) limit 1",
+    [nombre, exceptoId],
+  )
+  return rows.length > 0
+}
+
+// Registra una cancha activa. Si dos altas con el mismo nombre llegan juntas, el índice único de la base rechaza a la segunda
+// (error 23505) y se devuelve { resultado: 'NOMBRE_REPETIDO' }.
+export const crearCancha = async ({ nombre, deporte, tipoSuperficie, precioHora }, db = pool) => {
+  if (await existeNombre(nombre, null, db)) return { resultado: 'NOMBRE_REPETIDO' }
+  try {
+    const { rows } = await db.query(
+      `insert into cancha (nombre, deporte, tipo_superficie, precio_hora, activa)
+       values ($1, $2, $3, $4, true) returning id`,
+      [nombre, deporte, tipoSuperficie, precioHora],
+    )
+    return { resultado: 'OK', cancha: await obtenerCanchaConReservas(rows[0].id, db) }
+  } catch (error) {
+    if (error.code === '23505') return { resultado: 'NOMBRE_REPETIDO' }
+    throw error
+  }
+}
