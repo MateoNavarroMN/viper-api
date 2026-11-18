@@ -1,4 +1,4 @@
-import { actualizarCancha, crearCancha, disponibilidadDelDia, listarTodasLasCanchas, obtenerCanchaConReservas } from './modelo.canchas.js'
+import { actualizarCancha, cambiarEstadoCancha, crearCancha, disponibilidadDelDia, listarTodasLasCanchas, obtenerCanchaConReservas } from './modelo.canchas.js'
 import { validarCancha } from './validaciones.canchas.js'
 
 const DISCIPLINAS = ['TENIS', 'PADEL']
@@ -95,3 +95,38 @@ export const editar = async (req, res) => {
     return res.status(500).json({ mensaje: 'No se pudo actualizar la cancha' })
   }
 }
+
+const cambiarEstado = (activa) => async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json(NO_ENCONTRADA)
+  const { confirmar } = req.body ?? {}
+  if (confirmar !== undefined && typeof confirmar !== 'boolean') {
+    return res.status(400).json({ mensaje: 'confirmar tiene que ser verdadero o falso', campo: 'confirmar' })
+  }
+
+  try {
+    const r = await cambiarEstadoCancha(id, activa, confirmar === true)
+    if (r.resultado === 'NO_ENCONTRADA') return res.status(404).json(NO_ENCONTRADA)
+    if (r.resultado === 'YA_ESTA') return res.status(409).json({ mensaje: activa ? 'La cancha ya está activa' : 'La cancha ya está inactiva' })
+    if (r.resultado === 'REQUIERE_CONFIRMACION') {
+      const n = r.reservas.length
+      return res.status(409).json({
+        mensaje: `La cancha tiene ${n} ${n === 1 ? 'reserva futura Pendiente o Confirmada' : 'reservas futuras Pendientes o Confirmadas'}. No se cancelan solas: se gestionan desde la grilla`,
+        requiereConfirmacion: true,
+        reservasFuturas: n,
+        reservas: r.reservas,
+      })
+    }
+    return res.status(200).json({
+      mensaje: activa ? 'Cancha activada. Vuelve a mostrarse en la grilla con sus franjas libres' : 'Cancha desactivada. Deja de mostrarse en la grilla y no admite reservas nuevas',
+      cancha: r.cancha,
+    })
+  } catch (e) {
+    console.error(e)
+    return res.status(500).json({ mensaje: activa ? 'No se pudo activar la cancha' : 'No se pudo desactivar la cancha' })
+  }
+}
+
+// POST /api/canchas/:id/desactivar  { confirmar? }  ·  POST /api/canchas/:id/activar
+export const desactivar = cambiarEstado(false)
+export const activar = cambiarEstado(true)

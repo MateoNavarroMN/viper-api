@@ -210,3 +210,60 @@ export const actualizarCancha = async (id, cambios, db = pool) => {
     cliente.release()
   }
 }
+
+// Las reservas pendientes o confirmadas de una cancha que todavía no empezaron, con quién las hizo: es lo que se le muestra al
+// Administrador antes de desactivarla.
+const reservasFuturasDe = async (canchaId, db) => {
+  const { rows } = await db.query(
+    `select r.id, to_char(r.fecha, 'YYYY-MM-DD') as fecha, to_char(r.hora_inicio, 'HH24:MI') as "horaInicio",
+            to_char(r.hora_fin, 'HH24:MI') as "horaFin", r.tipo, r.estado, t.nombre as torneo,
+            u.nombre as "clienteNombre", u.apellido as "clienteApellido"
+       from reserva r
+       left join usuario u on u.id = r.cliente_usuario_id
+       left join partido p on p.reserva_id = r.id
+       left join torneo t on t.id = p.torneo_id
+      where r.cancha_id = $1 and r.estado in ('PENDIENTE', 'CONFIRMADA')
+        and (r.fecha + r.hora_inicio) at time zone 'America/Argentina/Cordoba' > now()
+      order by r.fecha, r.hora_inicio`,
+    [canchaId],
+  )
+  return rows.map((r) => ({
+    id: r.id, fecha: r.fecha, horaInicio: r.horaInicio, horaFin: r.horaFin, tipo: r.tipo, estado: r.estado,
+    torneo: r.torneo, cliente: r.clienteNombre ? { nombre: r.clienteNombre, apellido: r.clienteApellido } : null,
+  }))
+}
+
+// Activa o desactiva una cancha. Desactivar NO cancela ninguna reserva: si hay futuras y no se confirmó, devuelve
+// { resultado: 'REQUIERE_CONFIRMACION', reservas } para que la pantalla las muestre; con `confirmar` la desactiva igual.
+// Devuelve { resultado: 'OK', cancha } | 'NO_ENCONTRADA' | 'YA_ESTA' | { resultado: 'REQUIERE_CONFIRMACION', reservas }.
+export const cambiarEstadoCancha = async (id, activa, confirmar = false, db = pool) => {
+  const cliente = await db.connect()
+  try {
+    await cliente.query('begin')
+    await expirarVencidas(cliente)
+    const { rows } = await cliente.query('select activa from cancha where id = $1 for update', [id])
+    if (!rows[0]) {
+      await cliente.query('commit')
+      return { resultado: 'NO_ENCONTRADA' }
+    }
+    if (rows[0].activa === activa) {
+      await cliente.query('commit')
+      return { resultado: 'YA_ESTA' }
+    }
+    if (!activa && !confirmar) {
+      const reservas = await reservasFuturasDe(id, cliente)
+      if (reservas.length > 0) {
+        await cliente.query('commit')
+        return { resultado: 'REQUIERE_CONFIRMACION', reservas }
+      }
+    }
+    await cliente.query('update cancha set activa = $2 where id = $1', [id, activa])
+    await cliente.query('commit')
+    return { resultado: 'OK', cancha: await obtenerCanchaConReservas(id, db) }
+  } catch (error) {
+    await cliente.query('rollback')
+    throw error
+  } finally {
+    cliente.release()
+  }
+}
