@@ -68,3 +68,52 @@ export const validarProducto = (cuerpo) => {
   }
   return { datos }
 }
+
+// Valida los cambios de una edición: solo se revisan los campos que vienen en el cuerpo, con las mismas reglas del alta.
+// `actual` es el producto como está guardado (hace falta para saber si, con los cambios, sigue cumpliendo la regla del alquiler).
+// El stock no se modifica acá: tiene su propio ajuste con motivo (M5-BE-05).
+export const validarCambiosProducto = (cuerpo, actual) => {
+  const c = cuerpo ?? {}
+  const datos = {}
+
+  if (c.nombre !== undefined) {
+    const nombre = limpiarNombre(c.nombre)
+    if (!nombre) return invalido('nombre', 'El nombre es obligatorio')
+    if (nombre.length > NOMBRE_MAXIMO) return invalido('nombre', `El nombre admite hasta ${NOMBRE_MAXIMO} caracteres`)
+    datos.nombre = nombre
+  }
+  if (c.precio !== undefined) {
+    if (c.precio === '') return invalido('precio', 'El precio es obligatorio')
+    const precio = leerMonto(c.precio, 'El precio')
+    if (precio.error) return invalido('precio', precio.error)
+    datos.precio = precio.valor
+  }
+  if (c.categoria !== undefined) {
+    if (!CATEGORIAS.includes(c.categoria)) return invalido('categoria', 'La categoría debe ser PRO_SHOP o BUFFET')
+    datos.categoria = c.categoria
+  }
+
+  const alquilable = c.disponibleParaAlquiler === undefined ? actual.disponibleParaAlquiler : leerBooleano(c.disponibleParaAlquiler)
+  if (alquilable === null) return invalido('disponibleParaAlquiler', 'disponibleParaAlquiler tiene que ser verdadero o falso')
+
+  if (alquilable) {
+    // El precio de alquiler es el que viene o, si no viene, el que ya tenía
+    let precioAlquiler = actual.precioAlquiler
+    if (c.precioAlquiler !== undefined && c.precioAlquiler !== '') {
+      const alquiler = leerMonto(c.precioAlquiler, 'El precio de alquiler')
+      if (alquiler.error) return invalido('precioAlquiler', alquiler.error)
+      precioAlquiler = alquiler.valor
+    }
+    if (precioAlquiler === null || precioAlquiler === undefined) return invalido('precioAlquiler', 'Ingresá el precio de alquiler por turno')
+    if (precioAlquiler <= 0) return invalido('precioAlquiler', 'El precio de alquiler tiene que ser mayor a cero')
+    if (!actual.disponibleParaAlquiler || precioAlquiler !== actual.precioAlquiler) {
+      datos.disponibleParaAlquiler = true
+      datos.precioAlquiler = precioAlquiler
+    }
+  } else if (actual.disponibleParaAlquiler) {
+    // Dejó de ser alquilable: se borra el precio de alquiler
+    datos.disponibleParaAlquiler = false
+    datos.precioAlquiler = null
+  }
+  return { datos }
+}
