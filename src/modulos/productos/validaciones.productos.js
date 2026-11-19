@@ -117,3 +117,20 @@ export const validarCambiosProducto = (cuerpo, actual) => {
   }
   return { datos }
 }
+
+const MOTIVO_MAXIMO = 200
+const AJUSTE_MAXIMO = 1000000
+
+// Valida el cuerpo de un ajuste de stock: { cantidad, motivo }. La cantidad es un entero distinto de 0 (positivo suma, negativo resta).
+export const validarAjusteStock = (cuerpo) => {
+  const c = cuerpo ?? {}
+  const cantidadTexto = typeof c.cantidad === 'string' ? c.cantidad.trim() : c.cantidad
+  const cantidad = typeof cantidadTexto === 'string' && /^[+-]?\d+$/.test(cantidadTexto) ? Number(cantidadTexto) : cantidadTexto
+  if (!Number.isInteger(cantidad) || cantidad === 0) return invalido('cantidad', 'La cantidad debe ser un número entero distinto de 0')
+  if (Math.abs(cantidad) > AJUSTE_MAXIMO) return invalido('cantidad', `La cantidad no puede superar ${AJUSTE_MAXIMO}`)
+
+  const motivo = typeof c.motivo === 'string' ? c.motivo.trim().replace(/\s+/g, ' ') : ''
+  if (!motivo) return invalido('motivo', 'Indicá el motivo del ajuste')
+  if (motivo.length > MOTIVO_MAXIMO) return invalido('motivo', `El motivo admite hasta ${MOTIVO_MAXIMO} caracteres`)
+  return { datos: { cantidad, motivo } }
+}
