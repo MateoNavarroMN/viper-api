@@ -122,3 +122,45 @@ export const cambiarEstadoProducto = async (id, activo, db = pool) => {
     throw error
   }
 }
+
+// Suma (cantidad positiva) o resta (negativa) stock con UN solo UPDATE condicional: la base controla que nunca quede por debajo
+// de cero, aunque dos operaciones lleguen al mismo tiempo (la segunda espera a la primera y se evalúa con el stock ya descontado).
+// Devuelve el stock nuevo, o null si no existe el producto o el stock quedaría negativo.
+// La reutilizan el ajuste manual (acá), la venta del punto de venta y la anulación de una venta: `db` es el cliente de la transacción.
+export const actualizarStock = async (productoId, cantidad, db = pool) => {
+  const { rows } = await db.query(
+    `update producto
+        set stock_actual = stock_actual + $1
+      where id = $2 and stock_actual + $1 >= 0
+      returning stock_actual as "stockActual"`,
+    [cantidad, productoId]
+  )
+  return rows[0] ? rows[0].stockActual : null
+}
+
+// Ajuste manual: cambia el stock y deja el registro con motivo, usuario y stock resultante, todo en una transacción.
+export const ajustarStockManual = async ({ productoId, cantidad, motivo, usuarioId }) => {
+  const cliente = await pool.connect()
+  try {
+    await cliente.query('begin')
+    const stockActual = await actualizarStock(productoId, cantidad, cliente)
+    if (stockActual === null) {
+      await cliente.query('rollback')
+      const producto = await obtenerProducto(productoId, cliente)
+      return producto ? { resultado: 'STOCK_NEGATIVO', stockActual: producto.stockActual } : { resultado: 'NO_ENCONTRADO' }
+    }
+    const { rows } = await cliente.query(
+      `insert into ajuste_stock (producto_id, cantidad, motivo, stock_resultante, usuario_id)
+       values ($1, $2, $3, $4, $5)
+       returning id, cantidad, motivo, stock_resultante as "stockResultante", fecha_hora as "fechaHora"`,
+      [productoId, cantidad, motivo, stockActual, usuarioId]
+    )
+    await cliente.query('commit')
+    return { resultado: 'AJUSTADO', stockActual, stockAnterior: stockActual - cantidad, ajuste: rows[0] }
+  } catch (error) {
+    await cliente.query('rollback').catch(() => {})
+    throw error
+  } finally {
+    cliente.release()
+  }
+}

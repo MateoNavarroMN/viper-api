@@ -1,5 +1,5 @@
-import { cambiarEstadoProducto, crearProducto, editarProducto, listarProductos, obtenerProducto } from './modelo.productos.js'
-import { CATEGORIAS, validarCambiosProducto, validarProducto } from './validaciones.productos.js'
+import { ajustarStockManual, cambiarEstadoProducto, crearProducto, editarProducto, listarProductos, obtenerProducto } from './modelo.productos.js'
+import { CATEGORIAS, validarAjusteStock, validarCambiosProducto, validarProducto } from './validaciones.productos.js'
 import { ERROR_TIPO_IMAGEN, tipoDeImagen } from './imagen.productos.js'
 import { borrarImagenProducto, subirImagenProducto } from '../../config/almacenamiento.supabase.js'
 
@@ -155,3 +155,29 @@ const cambiarEstado = (activo) => async (req, res) => {
 // POST /api/productos/:id/baja  ·  POST /api/productos/:id/reactivar
 export const darDeBaja = cambiarEstado(false)
 export const reactivar = cambiarEstado(true)
+
+// POST /api/productos/:id/stock  { cantidad, motivo }
+// Cantidad positiva = reposición, negativa = corrección. El stock nunca queda por debajo de cero. Un producto dado de baja también se ajusta.
+export const ajustarStock = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json(NO_ENCONTRADO)
+  const { error, datos } = validarAjusteStock(req.body)
+  if (error) return res.status(400).json(error)
+
+  try {
+    const r = await ajustarStockManual({ productoId: id, ...datos, usuarioId: req.usuario.id })
+    if (r.resultado === 'NO_ENCONTRADO') return res.status(404).json(NO_ENCONTRADO)
+    if (r.resultado === 'STOCK_NEGATIVO') {
+      return res.status(409).json({ mensaje: 'El stock no puede quedar negativo', campo: 'cantidad', stockActual: r.stockActual })
+    }
+    return res.status(200).json({
+      mensaje: 'Stock actualizado correctamente',
+      stockAnterior: r.stockAnterior,
+      stockActual: r.stockActual,
+      ajuste: r.ajuste,
+    })
+  } catch (e) {
+    console.error(e)
+    return res.status(500).json({ mensaje: 'No se pudo ajustar el stock' })
+  }
+}
