@@ -1,5 +1,5 @@
-import { crearProducto, listarProductos } from './modelo.productos.js'
-import { CATEGORIAS, validarProducto } from './validaciones.productos.js'
+import { cambiarEstadoProducto, crearProducto, editarProducto, listarProductos, obtenerProducto } from './modelo.productos.js'
+import { CATEGORIAS, validarCambiosProducto, validarProducto } from './validaciones.productos.js'
 import { ERROR_TIPO_IMAGEN, tipoDeImagen } from './imagen.productos.js'
 import { borrarImagenProducto, subirImagenProducto } from '../../config/almacenamiento.supabase.js'
 
@@ -66,3 +66,92 @@ export const crear = async (req, res) => {
     return res.status(500).json({ mensaje: 'No se pudo registrar el producto' })
   }
 }
+
+const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const NO_ENCONTRADO = { mensaje: 'Producto no encontrado' }
+const DUPLICADO = { mensaje: 'Ya existe un producto activo con ese nombre en la categoría', campo: 'nombre' }
+
+// PATCH /api/productos/:id  — JSON, o multipart/form-data con el archivo opcional «imagen».
+// Campos opcionales: nombre, precio, categoria, disponibleParaAlquiler, precioAlquiler, quitarImagen.
+// El stock no se edita acá. El precio nuevo rige solo hacia adelante: las ventas ya registradas conservan el suyo.
+// Con un archivo nuevo se reemplaza la imagen; con quitarImagen=true se quita. Si vienen las dos, gana el archivo.
+export const editar = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json(NO_ENCONTRADO)
+
+  const quitarCrudo = req.body?.quitarImagen
+  if (quitarCrudo !== undefined && !['true', 'false', true, false].includes(quitarCrudo)) {
+    return res.status(400).json({ mensaje: 'quitarImagen tiene que ser verdadero o falso', campo: 'quitarImagen' })
+  }
+  const quitarImagen = quitarCrudo === true || quitarCrudo === 'true'
+
+  let imagenNueva = null
+  try {
+    const actual = await obtenerProducto(id)
+    if (!actual) return res.status(404).json(NO_ENCONTRADO)
+
+    const { error, datos } = validarCambiosProducto(req.body, actual)
+    if (error) return res.status(400).json(error)
+
+    if (req.file) {
+      const tipo = tipoDeImagen(req.file.buffer)
+      if (!tipo) return res.status(400).json(ERROR_TIPO_IMAGEN)
+      imagenNueva = await subirImagenProducto(req.file.buffer, tipo)
+      datos.imagenUrl = imagenNueva
+    } else if (quitarImagen) {
+      datos.imagenUrl = null
+    }
+    if (Object.keys(datos).length === 0) {
+      return res.status(200).json({ mensaje: 'No hay cambios para guardar', producto: actual })
+    }
+
+    const r = await editarProducto(id, datos)
+    if (r.resultado !== 'EDITADO') {
+      await borrarImagenProducto(imagenNueva) // no deja un archivo huérfano
+      if (r.resultado === 'NO_ENCONTRADO') return res.status(404).json(NO_ENCONTRADO)
+      if (r.resultado === 'DUPLICADO') return res.status(409).json(DUPLICADO)
+      return res.status(400).json({ mensaje: 'El precio de alquiler tiene que ser mayor a cero', campo: 'precioAlquiler' })
+    }
+
+    // Ya guardado el cambio: el archivo viejo deja de hacer falta
+    if (datos.imagenUrl !== undefined && r.imagenAnterior && r.imagenAnterior !== r.producto.imagenUrl) {
+      await borrarImagenProducto(r.imagenAnterior)
+    }
+    const precioCambio = datos.precio !== undefined && datos.precio !== r.precioAnterior
+    return res.status(200).json({
+      mensaje: precioCambio
+        ? 'Producto actualizado. El nuevo precio rige para las ventas que se registren desde ahora'
+        : 'Producto actualizado correctamente',
+      producto: r.producto,
+      precioAnterior: r.precioAnterior,
+    })
+  } catch (e) {
+    console.error(e)
+    await borrarImagenProducto(imagenNueva)
+    return res.status(500).json({ mensaje: 'No se pudo actualizar el producto' })
+  }
+}
+
+const cambiarEstado = (activo) => async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json(NO_ENCONTRADO)
+  try {
+    const r = await cambiarEstadoProducto(id, activo)
+    if (r.resultado === 'NO_ENCONTRADO') return res.status(404).json(NO_ENCONTRADO)
+    if (r.resultado === 'YA_ESTA') return res.status(409).json({ mensaje: activo ? 'El producto ya está activo' : 'El producto ya está dado de baja' })
+    if (r.resultado === 'DUPLICADO') {
+      return res.status(409).json({ mensaje: 'No se puede reactivar: ya existe otro producto activo con ese nombre en la categoría', campo: 'nombre' })
+    }
+    return res.status(200).json({
+      mensaje: activo ? 'Producto reactivado' : 'Producto dado de baja. Deja de mostrarse en la tienda y el punto de venta, y su historial de ventas se conserva',
+      producto: r.producto,
+    })
+  } catch (e) {
+    console.error(e)
+    return res.status(500).json({ mensaje: activo ? 'No se pudo reactivar el producto' : 'No se pudo dar de baja el producto' })
+  }
+}
+
+// POST /api/productos/:id/baja  ·  POST /api/productos/:id/reactivar
+export const darDeBaja = cambiarEstado(false)
+export const reactivar = cambiarEstado(true)
