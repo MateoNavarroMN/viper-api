@@ -71,6 +71,20 @@ const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 const NO_ENCONTRADO = { mensaje: 'Producto no encontrado' }
 const DUPLICADO = { mensaje: 'Ya existe un producto activo con ese nombre en la categoría', campo: 'nombre' }
 
+// GET /api/productos/:id  — datos de un producto para precargar el formulario de edición (solo Administrador)
+export const obtener = async (req, res) => {
+  const { id } = req.params
+  if (!REGEX_UUID.test(id)) return res.status(404).json(NO_ENCONTRADO)
+  try {
+    const producto = await obtenerProducto(id)
+    if (!producto) return res.status(404).json(NO_ENCONTRADO)
+    return res.status(200).json({ producto })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: 'No se pudo obtener el producto' })
+  }
+}
+
 // PATCH /api/productos/:id  — JSON, o multipart/form-data con el archivo opcional «imagen».
 // Campos opcionales: nombre, precio, categoria, disponibleParaAlquiler, precioAlquiler, quitarImagen.
 // El stock no se edita acá. El precio nuevo rige solo hacia adelante: las ventas ya registradas conservan el suyo.
