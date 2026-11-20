@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { autenticar, autorizar } from '../../middlewares/autenticacion.middleware.js'
+import { anular } from './controlador.anulacion.caja.js'
 import { estado } from './controlador.caja.js'
 import { detalle, listar } from './controlador.movimientos.caja.js'
 import { origenesPendientes } from './controlador.origenes.caja.js'
@@ -12,6 +13,7 @@ router.get('/estado', autenticar, autorizar('RECEPCIONISTA'), estado)
 router.get('/movimientos', autenticar, autorizar('RECEPCIONISTA'), listar)
 router.get('/movimientos/:id', autenticar, autorizar('RECEPCIONISTA'), detalle)
 router.post('/movimientos', autenticar, autorizar('RECEPCIONISTA'), registrar)
+router.post('/movimientos/:id/anular', autenticar, autorizar('RECEPCIONISTA'), anular)
 router.get('/origenes-pendientes', autenticar, autorizar('RECEPCIONISTA'), origenesPendientes)
 
 export default router
