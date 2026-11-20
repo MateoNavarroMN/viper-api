@@ -7,11 +7,13 @@ const API_POR_DEFECTO = 'https://api.mercadopago.com'
 const TIEMPO_MAXIMO_MS = 15000
 
 // Error al hablar con Mercado Pago. `detalle` es solo para el registro del servidor: no se le muestra al usuario.
+// `estado` es el código HTTP que respondió Mercado Pago (undefined si no hubo respuesta).
 export class MercadoPagoError extends Error {
-  constructor(mensaje, detalle) {
+  constructor(mensaje, detalle, estado) {
     super(mensaje)
     this.name = 'MercadoPagoError'
     this.detalle = detalle
+    this.estado = estado
   }
 }
 export const esErrorMercadoPago = (error) => error instanceof MercadoPagoError
@@ -66,7 +68,27 @@ export const crearOrden = async ({ transaccionId, titulo, monto, minutosDeVigenc
   }
 
   const datos = await respuesta.json().catch(() => null)
-  if (!respuesta.ok) throw new MercadoPagoError('Mercado Pago rechazó la orden', `HTTP ${respuesta.status} ${JSON.stringify(datos)}`)
+  if (!respuesta.ok) throw new MercadoPagoError('Mercado Pago rechazó la orden', `HTTP ${respuesta.status} ${JSON.stringify(datos)}`, respuesta.status)
   if (!datos?.id || !datos?.checkout_url) throw new MercadoPagoError('Mercado Pago respondió sin dirección de pago', JSON.stringify(datos))
   return { ordenId: datos.id, urlPago: datos.checkout_url }
+}
+
+// Consulta una orden a Mercado Pago (GET /v1/orders/{id}). Es la fuente de verdad: del aviso que llega por webhook solo se usa el id.
+export const obtenerOrden = async (ordenId) => {
+  const token = process.env.MP_ACCESS_TOKEN
+  if (!token) throw new MercadoPagoError('Mercado Pago no está configurado', 'Falta MP_ACCESS_TOKEN')
+
+  let respuesta
+  try {
+    respuesta = await fetch(`${process.env.MP_API_URL ?? API_POR_DEFECTO}/v1/orders/${encodeURIComponent(ordenId)}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(TIEMPO_MAXIMO_MS),
+    })
+  } catch (error) {
+    throw new MercadoPagoError('No se pudo conectar con Mercado Pago', error.message)
+  }
+  const datos = await respuesta.json().catch(() => null)
+  if (!respuesta.ok) throw new MercadoPagoError('Mercado Pago no devolvió la orden', `HTTP ${respuesta.status} ${JSON.stringify(datos)}`, respuesta.status)
+  if (!datos?.id) throw new MercadoPagoError('Mercado Pago devolvió una orden sin identificador', JSON.stringify(datos))
+  return datos
 }
