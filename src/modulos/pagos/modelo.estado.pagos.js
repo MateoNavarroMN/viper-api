@@ -9,6 +9,8 @@ export const MINUTOS_SIN_ACTIVIDAD = 60
 export const MOTIVO_CANCELADO = 'Cancelado por el cliente'
 export const MOTIVO_VENCIDO = 'Pago en línea sin completar'
 const MOTIVO_REEMPLAZADO = 'Reemplazado por un nuevo intento de pago'
+export const MOTIVO_OTRO_INTENTO = 'El pago se acreditó con otro intento'
+const COLUMNA_ORIGEN = { RESERVA: 'reserva_id', INSCRIPCION: 'inscripcion_id', CUOTA: 'cuota_id' }
 
 // Estados que ve la pantalla: PAGADO, PENDIENTE, RECHAZADO, CANCELADO, VENCIDO
 const estadoParaPantalla = (t) => {
@@ -112,19 +114,42 @@ export const armarRespuesta = async (t) => {
   }
 }
 
-// Si el pago sigue pendiente, le pregunta a Mercado Pago cómo está la orden y lo aplica. Cubre el aviso que no llegó
-// (retorno sin conexión, webhook caído): el estado sale de Mercado Pago, no de lo que haya mandado el navegador.
-// Si Mercado Pago no responde no es un error: el pago sigue pendiente y se vuelve a preguntar en la próxima consulta.
-export const conciliar = async (t) => {
-  if (t.estado !== 'PENDIENTE' || !t.ordenId) return false
-  try {
-    const orden = await obtenerOrden(t.ordenId)
-    await aplicarOrden(orden)
-    return true
-  } catch (error) {
-    console.error(`No se pudo conciliar el pago ${t.id}: ${error.message}`)
-    return false
+// Si el pago no está resuelto, le pregunta a Mercado Pago cómo están las órdenes y las aplica como haría el webhook. Cubre el aviso
+// que no llegó (retorno sin conexión, webhook caído). Revisa este pago y también los otros intentos recientes de lo mismo: si la
+// persona abrió el pago dos veces, el primero queda anulado pero igual pudo haber pagado ahí. Si Mercado Pago no responde no es un
+// error: el pago sigue como estaba y se vuelve a preguntar en la próxima consulta. Devuelve true si alguna orden quedó acreditada.
+const MOTIVOS_REVISABLES = [MOTIVO_REEMPLAZADO, MOTIVO_CANCELADO, MOTIVO_VENCIDO]
+export const conciliar = async (t, db = pool) => {
+  if (t.estado === 'APROBADO' || t.estado === 'RECHAZADO') return false
+  const columna = COLUMNA_ORIGEN[t.concepto]
+  const { rows } = await db.query(
+    `select id, mp_preference_id as "ordenId" from transaccion_caja
+      where metodo_pago = 'MERCADO_PAGO' and mp_preference_id is not null
+        and (estado = 'PENDIENTE' or (estado = 'ANULADO' and motivo_anulacion = any($3)))
+        and (id = $1 or (${columna} = $2 and fecha_hora > now() - interval '1 day'))
+      order by fecha_hora desc`,
+    [t.id, t.reserva_id ?? t.inscripcion_id ?? t.cuota_id, MOTIVOS_REVISABLES]
+  )
+  for (const fila of rows) {
+    try {
+      const orden = await obtenerOrden(fila.ordenId)
+      const resultado = await aplicarOrden(orden)
+      if (resultado === 'PROCESADA' || resultado === 'DEVOLUCION_PENDIENTE') return true
+    } catch (error) {
+      console.error(`No se pudo conciliar el pago ${fila.id}: ${error.message}`)
+    }
   }
+  return false
+}
+
+// Si este intento quedó anulado porque lo que se quería pagar se acreditó con otro, devuelve ese otro (el que está Aprobado).
+export const leerIntentoAcreditado = async (t, db = pool) => {
+  if (t.estado !== 'ANULADO' || t.motivo !== MOTIVO_OTRO_INTENTO) return null
+  const { rows } = await db.query(
+    `select id from transaccion_caja where ${COLUMNA_ORIGEN[t.concepto]} = $1 and metodo_pago = 'MERCADO_PAGO' and estado = 'APROBADO' order by fecha_hora desc limit 1`,
+    [t.reserva_id ?? t.inscripcion_id ?? t.cuota_id]
+  )
+  return rows[0] ? leerPago(rows[0].id, db) : null
 }
 
 // Anula los pendientes de Mercado Pago sin actividad hace más de una hora (de un pago puntual o de todos).
