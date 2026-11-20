@@ -1,6 +1,7 @@
 import { fechaDeHoy } from './modelo.caja.js'
 import { ejecutarCierre, esCierreRechazado, listarCierres, obtenerCierre } from './modelo.cierres.caja.js'
 import { esFechaValida } from './validaciones.caja.js'
+import { vencerPendientes } from '../pagos/modelo.estado.pagos.js'
 
 const ESTADOS = ['CUADRADO', 'DESCUADRADO']
 const TAMANIO_POR_DEFECTO = 20
@@ -42,6 +43,9 @@ export const cerrar = async (req, res) => {
     const hoy = await fechaDeHoy()
     const dia = fecha || hoy
     if (dia > hoy) return res.status(400).json({ mensaje: 'La fecha de la jornada no puede ser futura', campo: 'fecha' })
+
+    // Los cobros en línea sin actividad hace más de una hora se anulan para que no frenen el cierre
+    await vencerPendientes()
 
     const r = await ejecutarCierre({ fecha: dia, efectivoDeclarado: monto, responsableId: req.usuario.id })
     return res.status(201).json({ mensaje: 'Caja cerrada', ...r })

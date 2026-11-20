@@ -1,6 +1,7 @@
 import { fechaDeHoy } from './modelo.caja.js'
 import { fechasAbiertas, resumenDeLaJornada } from './modelo.cierre.caja.js'
 import { esFechaValida } from './validaciones.caja.js'
+import { vencerPendientes } from '../pagos/modelo.estado.pagos.js'
 
 // GET /api/caja/cierre/resumen?fecha=AAAA-MM-DD  (Recepcionista y Administrador; sin fecha, la de hoy)
 // La cuenta de la jornada con los movimientos aprobados: efectivo calculado, total digital, desglose por concepto y los cobros en
@@ -17,6 +18,8 @@ export const resumen = async (req, res) => {
     const hoy = await fechaDeHoy()
     const dia = fecha ?? hoy
     if (dia > hoy) return res.status(400).json({ mensaje: 'La fecha de la jornada no puede ser futura', campo: 'fecha' })
+    // Los cobros en línea sin actividad hace más de una hora se anulan: ya no pueden frenar el cierre
+    await vencerPendientes()
     return res.status(200).json({ hoy, ...(await resumenDeLaJornada(dia)) })
   } catch (error) {
     console.error(error)

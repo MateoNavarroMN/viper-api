@@ -92,3 +92,24 @@ export const obtenerOrden = async (ordenId) => {
   if (!datos?.id) throw new MercadoPagoError('Mercado Pago devolvió una orden sin identificador', JSON.stringify(datos))
   return datos
 }
+
+// Pide a Mercado Pago que cancele una orden que todavía no se pagó (el cliente volvió sin pagar). Es un aviso de cortesía:
+// si falla no se corta nada, porque el movimiento de Viper queda anulado igual y un pago tardío se resuelve con la devolución.
+export const cancelarOrden = async (ordenId) => {
+  const token = process.env.MP_ACCESS_TOKEN
+  if (!token) throw new MercadoPagoError('Mercado Pago no está configurado', 'Falta MP_ACCESS_TOKEN')
+  let respuesta
+  try {
+    respuesta = await fetch(`${process.env.MP_API_URL ?? API_POR_DEFECTO}/v1/orders/${encodeURIComponent(ordenId)}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'X-Idempotency-Key': `cancelar-${ordenId}` },
+      signal: AbortSignal.timeout(TIEMPO_MAXIMO_MS),
+    })
+  } catch (error) {
+    throw new MercadoPagoError('No se pudo conectar con Mercado Pago', error.message)
+  }
+  if (!respuesta.ok) {
+    const datos = await respuesta.json().catch(() => null)
+    throw new MercadoPagoError('Mercado Pago no pudo cancelar la orden', `HTTP ${respuesta.status} ${JSON.stringify(datos)}`, respuesta.status)
+  }
+}
