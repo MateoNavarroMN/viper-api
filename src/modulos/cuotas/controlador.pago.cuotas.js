@@ -1,4 +1,6 @@
-import { buscarCuotaPorId, fechaDeHoy, registrarPagoCuota, situacionCuotasDelSocio } from './modelo.cuotas.js'
+import { cobrarYAsentar } from '../caja/asentar.cobros.caja.js'
+import { MENSAJE_CAJA_CERRADA } from '../caja/modelo.caja.js'
+import { buscarCuotaPorId, fechaDeHoy } from './modelo.cuotas.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const REGEX_FECHA = /^\d{4}-\d{2}-\d{2}$/
@@ -16,6 +18,8 @@ const invalido = (res, mensaje, campo) => res.status(400).json({ mensaje, campo 
 
 // POST /api/cuotas/:id/pago  { metodoPago: 'EFECTIVO' | 'TRANSFERENCIA', fechaPago?: 'AAAA-MM-DD' }
 // (CU 4.2 · A1, Recepcionista y Administrador). Sin fechaPago se toma el momento actual.
+// El ingreso queda asentado en la caja de hoy (aunque la cuota guarde un día anterior como fecha de pago). Con la caja cerrada responde
+// 409 y la cuota sigue pendiente.
 // El estado del socio pasa a «Al día» solo: se calcula a partir de sus cuotas vencidas.
 export const registrarPago = async (req, res) => {
   const { id } = req.params
@@ -32,16 +36,13 @@ export const registrarPago = async (req, res) => {
   try {
     if (conFecha && fechaPago > (await fechaDeHoy())) return invalido(res, 'La fecha de pago no puede ser futura', 'fechaPago')
 
-    const cuota = await buscarCuotaPorId(id)
-    if (!cuota) return res.status(404).json({ mensaje: 'Cuota no encontrada' })
-    if (cuota.estadoPago === 'PAGADO') return res.status(409).json({ mensaje: 'La cuota ya está pagada' })
+    const cobro = await cobrarYAsentar({ concepto: 'CUOTA', origenId: id, metodoPago, operadorId: req.usuario.id, fechaPago: conFecha ? fechaPago : null })
+    if (cobro.resultado === 'CAJA_CERRADA') return res.status(409).json({ mensaje: MENSAJE_CAJA_CERRADA })
+    if (cobro.resultado === 'NO_ENCONTRADO') return res.status(404).json({ mensaje: 'Cuota no encontrada' })
+    // Ya estaba paga, o la pagó otra persona al mismo tiempo
+    if (cobro.resultado !== 'OK') return res.status(409).json({ mensaje: 'La cuota ya está pagada' })
 
-    const pagada = await registrarPagoCuota(id, metodoPago, conFecha ? fechaPago : null, req.usuario.id)
-    // Otra persona registró el pago entre la consulta y la actualización
-    if (!pagada) return res.status(409).json({ mensaje: 'La cuota ya está pagada' })
-
-    const situacionCuotas = await situacionCuotasDelSocio(pagada.socioId)
-    return res.json({ mensaje: 'Pago registrado', cuota: pagada, situacionCuotas })
+    return res.json({ mensaje: 'Pago registrado', cuota: await buscarCuotaPorId(id), situacionCuotas: cobro.situacionCuotas })
   } catch (error) {
     console.error(error)
     return res.status(500).json({ mensaje: 'No se pudo registrar el pago' })

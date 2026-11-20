@@ -1,5 +1,7 @@
+import { cobrarYAsentar } from '../caja/asentar.cobros.caja.js'
+import { MENSAJE_CAJA_CERRADA } from '../caja/modelo.caja.js'
 import { accionesPermitidas } from './acciones.reservas.js'
-import { ANTICIPACION_CANCELACION_HORAS, MENSAJE_FRANJA_OCUPADA, canchasParaReasignar, cancelarPorDecision, confirmarReserva, crearReserva, expirarVencidas, modificarHorario, obtenerClienteReserva, obtenerReservaDetalle, reasignarCancha } from './modelo.reservas.js'
+import { ANTICIPACION_CANCELACION_HORAS, MENSAJE_FRANJA_OCUPADA, canchasParaReasignar, cancelarPorDecision, crearReserva, expirarVencidas, modificarHorario, obtenerClienteReserva, obtenerReservaDetalle, reasignarCancha } from './modelo.reservas.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const NO_ENCONTRADA = { mensaje: 'Reserva no encontrada' }
@@ -112,20 +114,35 @@ export const crearDirecta = async (req, res) => {
     const clienteUsuarioId = await obtenerClienteReserva(clienteJugadorId)
     if (!clienteUsuarioId) return res.status(404).json({ mensaje: 'El cliente debe tener una cuenta para reservar', campo: 'clienteJugadorId' })
 
-    const resultado = await crearReserva({
-      canchaId,
-      clienteUsuarioId,
-      fecha,
-      horaInicio,
-      horaFin,
-      cobro: cobro.registrar ? { metodoPago: cobro.metodoPago, operadorUsuarioId: req.usuario.id } : null,
-    })
-    if (resultado.resultado !== 'OK') {
-      const [estado, mensaje] = RECHAZOS[resultado.resultado]
-      return res.status(estado).json({ mensaje })
+    const datosReserva = { canchaId, clienteUsuarioId, fecha, horaInicio, horaFin }
+    let reservaId
+    if (cobro.registrar) {
+      // Se cobra en el momento: el turno, su cobro y el ingreso en caja se guardan juntos o no se guarda nada
+      const cobrado = await cobrarYAsentar({
+        concepto: 'RESERVA',
+        metodoPago: cobro.metodoPago,
+        operadorId: req.usuario.id,
+        crearOrigen: async (tx) => {
+          const creada = await crearReserva(datosReserva, tx)
+          return creada.resultado === 'OK' ? { resultado: 'OK', origenId: creada.reservaId } : creada
+        },
+      })
+      if (cobrado.resultado === 'CAJA_CERRADA') return res.status(409).json({ mensaje: MENSAJE_CAJA_CERRADA })
+      if (cobrado.resultado !== 'OK') {
+        const [estado, mensaje] = RECHAZOS[cobrado.resultado] ?? [409, 'No se pudo cobrar el turno']
+        return res.status(estado).json({ mensaje })
+      }
+      reservaId = cobrado.origenId
+    } else {
+      const resultado = await crearReserva(datosReserva)
+      if (resultado.resultado !== 'OK') {
+        const [estado, mensaje] = RECHAZOS[resultado.resultado]
+        return res.status(estado).json({ mensaje })
+      }
+      reservaId = resultado.reservaId
     }
 
-    const reserva = await obtenerReservaDetalle(resultado.reservaId)
+    const reserva = await obtenerReservaDetalle(reservaId)
     const { segundosParaInicio, ...datos } = reserva
     const mensaje = cobro.registrar
       ? 'Turno registrado y cobrado. La reserva queda confirmada.'
@@ -137,13 +154,13 @@ export const crearDirecta = async (req, res) => {
   }
 }
 
-// Por qué no se pudo cobrar, según el resultado de confirmarReserva
+// Por qué no se pudo cobrar, según el resultado de cobrarYAsentar
 const RECHAZOS_COBRO = {
-  NO_ENCONTRADA: [404, 'Reserva no encontrada'],
+  NO_ENCONTRADO: [404, 'Reserva no encontrada'],
   NO_COBRABLE: [409, 'Esta reserva no se cobra desde acá'],
-  EXPIRADA: [409, 'El plazo de pago venció y la franja fue liberada'],
-  YA_PAGADA: [409, 'La reserva ya está pagada'],
-  CANCELADA: [409, 'La reserva está cancelada'],
+  VENCIDO: [409, 'El plazo de pago venció y la franja fue liberada'],
+  YA_PAGADO: [409, 'La reserva ya está pagada'],
+  CANCELADO: [409, 'La reserva está cancelada'],
 }
 
 // POST /api/reservas/:id/cobro  { metodoPago: 'EFECTIVO' | 'TRANSFERENCIA' }
@@ -157,7 +174,8 @@ export const cobrar = async (req, res) => {
   }
 
   try {
-    const { resultado } = await confirmarReserva(id, req.usuario.id, metodoPago)
+    const { resultado } = await cobrarYAsentar({ concepto: 'RESERVA', origenId: id, metodoPago, operadorId: req.usuario.id })
+    if (resultado === 'CAJA_CERRADA') return res.status(409).json({ mensaje: MENSAJE_CAJA_CERRADA })
     if (resultado !== 'OK') {
       const [estado, mensaje] = RECHAZOS_COBRO[resultado]
       return res.status(estado).json({ mensaje })
