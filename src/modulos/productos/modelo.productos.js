@@ -5,8 +5,8 @@ import { sinTildes } from '../usuarios/modelo.consulta.usuarios.js'
 
 const CON_TILDES = 'áàäâéèëêíìïîóòöôúùüûñ'
 const SIN_TILDES = 'aaaaeeeeiiiioooouuuun'
-const columnaNormalizada = (expresion) => `translate(lower(${expresion}), '${CON_TILDES}', '${SIN_TILDES}')`
-const escaparLike = (texto) => texto.replace(/[\\%_]/g, '\\$&')
+export const columnaNormalizada = (expresion) => `translate(lower(${expresion}), '${CON_TILDES}', '${SIN_TILDES}')`
+export const escaparLike = (texto) => texto.replace(/[\\%_]/g, '\\$&')
 
 const COLUMNAS = `id, nombre, categoria, precio, stock_actual as "stockActual", activo,
        imagen_url as "imagenUrl", disponible_para_alquiler as "disponibleParaAlquiler", precio_alquiler as "precioAlquiler"`
