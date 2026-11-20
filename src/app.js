@@ -32,6 +32,7 @@ import rutasMisContratos from './modulos/reservas/rutas.mis.contratos.js'
 import rutasProductos from './modulos/productos/rutas.productos.js'
 import rutasCaja from './modulos/caja/rutas.caja.js'
 import rutasPos from './modulos/pos/rutas.pos.js'
+import rutasTienda from './modulos/tienda/rutas.tienda.js'
 
 const app = express()
 
@@ -86,6 +87,7 @@ app.use('/api/mis-contratos', rutasMisContratos)
 app.use('/api/productos', rutasProductos)
 app.use('/api/caja', rutasCaja)
 app.use('/api/pos', rutasPos)
+app.use('/api/tienda', rutasTienda)
 
 // Ruta no encontrada
 app.use((req, res) => {
