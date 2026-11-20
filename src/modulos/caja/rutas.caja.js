@@ -3,6 +3,7 @@ import { autenticar, autorizar } from '../../middlewares/autenticacion.middlewar
 import { estado } from './controlador.caja.js'
 import { detalle, listar } from './controlador.movimientos.caja.js'
 import { origenesPendientes } from './controlador.origenes.caja.js'
+import { registrar } from './controlador.registro.caja.js'
 
 const router = Router()
 
@@ -10,6 +11,7 @@ const router = Router()
 router.get('/estado', autenticar, autorizar('RECEPCIONISTA'), estado)
 router.get('/movimientos', autenticar, autorizar('RECEPCIONISTA'), listar)
 router.get('/movimientos/:id', autenticar, autorizar('RECEPCIONISTA'), detalle)
+router.post('/movimientos', autenticar, autorizar('RECEPCIONISTA'), registrar)
 router.get('/origenes-pendientes', autenticar, autorizar('RECEPCIONISTA'), origenesPendientes)
 
 export default router
