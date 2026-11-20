@@ -1,5 +1,5 @@
 import { cancelarOrden, esErrorMercadoPago } from './cliente.mercadopago.js'
-import { armarRespuesta, cancelarPendiente, conciliar, leerPago, vencerPendientes } from './modelo.estado.pagos.js'
+import { armarRespuesta, cancelarPendiente, conciliar, leerIntentoAcreditado, leerPago, vencerPendientes } from './modelo.estado.pagos.js'
 
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -29,11 +29,14 @@ export const consultar = async (req, res) => {
   try {
     let pago = await buscar(req, res)
     if (!pago) return
-    if (pago.estado === 'PENDIENTE') {
+    if (pago.estado === 'PENDIENTE' || pago.estado === 'ANULADO') {
       await conciliar(pago)
       if (pago.esViejo) await vencerPendientes(pago.id)
       pago = await leerPago(pago.id)
     }
+    // Si se acreditó con otro intento de lo mismo, se informa como pagado (con los datos del pago que sí se acreditó)
+    const acreditado = await leerIntentoAcreditado(pago)
+    if (acreditado) return res.status(200).json({ ...(await armarRespuesta(acreditado)), transaccionId: pago.id })
     return res.status(200).json(await armarRespuesta(pago))
   } catch (error) {
     console.error(error)
@@ -52,7 +55,7 @@ export const cancelar = async (req, res) => {
     if (!pago) return
     await conciliar(pago)
     const resultado = await cancelarPendiente(pago.id)
-    if (resultado === 'YA_PAGADO') return res.status(409).json({ mensaje: 'El pago ya se acreditó, no se puede cancelar' })
+    if (resultado === 'YA_PAGADO' || (await leerIntentoAcreditado(await leerPago(pago.id)))) return res.status(409).json({ mensaje: 'El pago ya se acreditó, no se puede cancelar' })
 
     if (resultado === 'CANCELADO' && pago.ordenId) {
       // Se le avisa a Mercado Pago para que cierre la orden; si falla no importa
