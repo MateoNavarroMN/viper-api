@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { autenticar, autorizar } from '../../middlewares/autenticacion.middleware.js'
 import { balance } from './controlador.balance.dashboard.js'
 import { caja, canchas } from './controlador.operativo.dashboard.js'
+import { tienda } from './controlador.tienda.dashboard.js'
 import { comunicados, socios, torneos } from './controlador.vigentes.dashboard.js'
 
 const router = Router()
@@ -15,5 +16,6 @@ router.get('/canchas', canchas)
 router.get('/torneos', torneos)
 router.get('/socios', socios)
 router.get('/comunicados', comunicados)
+router.get('/tienda', tienda)
 
 export default router
