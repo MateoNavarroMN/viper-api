@@ -1,8 +1,19 @@
-import { buscarEnCartelera, listarCartelera } from './modelo.portal.js'
+import { buscarEnCartelera, listarCartelera, proximosPartidos, torneosEnCurso } from './modelo.portal.js'
 
 const LIMITE_POR_DEFECTO = 10
 const LIMITE_MAXIMO = 50
 const REGEX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// Cada bloque del portal es un endpoint propio: si uno falla, el resto sigue funcionando. Siempre se usa el jugador de la
+// sesión (req.usuario.jugador_id), nunca un id recibido por URL.
+const bloque = (leer, mensajeDeError) => async (req, res) => {
+  try {
+    return res.status(200).json(await leer(req.usuario.jugador_id))
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({ mensaje: mensajeDeError })
+  }
+}
 
 // GET /api/portal/comunicados?limite=  → { comunicados: [{ id, titulo, alcance, fechaPublicacion, extracto, hayMas }], total }
 export const cartelera = async (req, res) => {
@@ -30,3 +41,9 @@ export const comunicado = async (req, res) => {
     return res.status(500).json({ mensaje: 'No se pudo obtener el comunicado' })
   }
 }
+
+// GET /api/portal/partidos  → { partidos: [...] } (lista vacía si no tiene)
+export const partidos = bloque(async (jugadorId) => ({ partidos: await proximosPartidos(jugadorId) }), 'No se pudieron obtener los próximos partidos')
+
+// GET /api/portal/torneos  → { torneos: [...] } (lista vacía si no juega ninguno)
+export const torneos = bloque(async (jugadorId) => ({ torneos: await torneosEnCurso(jugadorId) }), 'No se pudieron obtener los torneos en curso')
