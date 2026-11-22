@@ -52,3 +52,43 @@ export const crearComunicado = async ({ titulo, mensaje, alcance, accion }, auto
   )
   return buscarComunicado(rows[0].id, db)
 }
+
+// Edita un borrador y, si se pidió, lo publica en el mismo paso. El `where estado = 'BORRADOR'` hace que de dos pedidos
+// simultáneos solo prospere uno. Devuelve { resultado: 'NO_ENCONTRADO' | 'NO_ES_BORRADOR' | 'OK', comunicado }.
+export const editarBorrador = async (id, { titulo, mensaje, alcance, accion }, db = pool) => {
+  const publicar = accion === 'PUBLICAR'
+  const { rowCount } = await db.query(
+    `update comunicado
+        set titulo = $2, mensaje = $3, alcance = $4,
+            estado = case when $5 then 'PUBLICADO'::estado_comunicado else estado end,
+            fecha_publicacion = case when $5 then now() else fecha_publicacion end
+      where id = $1 and estado = 'BORRADOR'`,
+    [id, titulo, mensaje, alcance, publicar]
+  )
+  if (rowCount === 1) return { resultado: 'OK', comunicado: await buscarComunicado(id, db) }
+  return { resultado: (await buscarComunicado(id, db)) ? 'NO_ES_BORRADOR' : 'NO_ENCONTRADO' }
+}
+
+// Publica un borrador ya guardado: exige que tenga mensaje. Devuelve { resultado: 'NO_ENCONTRADO' | 'NO_ES_BORRADOR' |
+// 'SIN_MENSAJE' | 'OK', comunicado }.
+export const publicarBorrador = async (id, db = pool) => {
+  const { rowCount } = await db.query(
+    `update comunicado set estado = 'PUBLICADO', fecha_publicacion = now()
+      where id = $1 and estado = 'BORRADOR' and btrim(mensaje) <> ''`,
+    [id]
+  )
+  if (rowCount === 1) return { resultado: 'OK', comunicado: await buscarComunicado(id, db) }
+  const actual = await buscarComunicado(id, db)
+  if (!actual) return { resultado: 'NO_ENCONTRADO' }
+  return { resultado: actual.estado === 'BORRADOR' ? 'SIN_MENSAJE' : 'NO_ES_BORRADOR' }
+}
+
+// Retira un comunicado publicado (retirar()): conserva su fecha de publicación y deja de verse en el portal.
+export const retirarComunicado = async (id, db = pool) => {
+  const { rowCount } = await db.query(
+    "update comunicado set estado = 'RETIRADO' where id = $1 and estado = 'PUBLICADO'",
+    [id]
+  )
+  if (rowCount === 1) return { resultado: 'OK', comunicado: await buscarComunicado(id, db) }
+  return { resultado: (await buscarComunicado(id, db)) ? 'NO_ESTA_PUBLICADO' : 'NO_ENCONTRADO' }
+}
