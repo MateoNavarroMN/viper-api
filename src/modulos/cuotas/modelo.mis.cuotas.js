@@ -25,8 +25,11 @@ export const obtenerMisCuotas = async (jugadorId, db = pool) => {
   if (!socio || socio.estado !== 'ACTIVO') return null
 
   const cuotas = await listarCuotasDeSocio(socio.id, db)
+  // montoAdeudado: la suma de las cuotas vencidas (0 si está al día), redondeada a dos decimales
+  const montoAdeudado = Math.round(cuotas.filter((c) => c.vencida).reduce((total, c) => total + Number(c.monto), 0) * 100) / 100
   return {
     situacion: cuotas.some((c) => c.vencida) ? 'ADEUDADO' : 'AL_DIA',
+    montoAdeudado,
     cuotas,
     pagoEnLinea: { disponible: false },
   }
