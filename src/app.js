@@ -35,6 +35,7 @@ import rutasPos from './modulos/pos/rutas.pos.js'
 import rutasTienda from './modulos/tienda/rutas.tienda.js'
 import rutasPagos from './modulos/pagos/rutas.pagos.js'
 import rutasComunicados from './modulos/comunicados/rutas.comunicados.js'
+import rutasPortal from './modulos/portal/rutas.portal.js'
 
 const app = express()
 
@@ -92,6 +93,7 @@ app.use('/api/pos', rutasPos)
 app.use('/api/tienda', rutasTienda)
 app.use('/api/pagos', rutasPagos)
 app.use('/api/comunicados', rutasComunicados)
+app.use('/api/portal', rutasPortal)
 
 // Ruta no encontrada
 app.use((req, res) => {
