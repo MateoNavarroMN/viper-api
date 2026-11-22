@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { autenticar, autorizar } from '../../middlewares/autenticacion.middleware.js'
-import { cartelera, comunicado, partidos, torneos } from './controlador.portal.js'
+import { comunicado, cartelera, cuotas, partidos, ranking, torneos } from './controlador.portal.js'
 
 const router = Router()
 
@@ -8,7 +8,9 @@ const router = Router()
 router.use(autenticar, autorizar('JUGADOR'))
 router.get('/comunicados', cartelera)
 router.get('/comunicados/:id', comunicado)
+router.get('/ranking', ranking)
 router.get('/partidos', partidos)
 router.get('/torneos', torneos)
+router.get('/cuotas', cuotas)
 
 export default router

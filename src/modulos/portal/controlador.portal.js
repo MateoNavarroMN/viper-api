@@ -1,4 +1,4 @@
-import { buscarEnCartelera, listarCartelera, proximosPartidos, torneosEnCurso } from './modelo.portal.js'
+import { buscarEnCartelera, cuotasDelJugador, listarCartelera, proximosPartidos, rankingDelJugador, torneosEnCurso } from './modelo.portal.js'
 
 const LIMITE_POR_DEFECTO = 10
 const LIMITE_MAXIMO = 50
@@ -42,8 +42,14 @@ export const comunicado = async (req, res) => {
   }
 }
 
+// GET /api/portal/ranking  → { ranking: [{ disciplina, participa, posicion, puntos, categoria, sinPuntos }] }
+export const ranking = bloque(async (jugadorId) => ({ ranking: await rankingDelJugador(jugadorId) }), 'No se pudo obtener el ranking')
+
 // GET /api/portal/partidos  → { partidos: [...] } (lista vacía si no tiene)
 export const partidos = bloque(async (jugadorId) => ({ partidos: await proximosPartidos(jugadorId) }), 'No se pudieron obtener los próximos partidos')
 
 // GET /api/portal/torneos  → { torneos: [...] } (lista vacía si no juega ninguno)
 export const torneos = bloque(async (jugadorId) => ({ torneos: await torneosEnCurso(jugadorId) }), 'No se pudieron obtener los torneos en curso')
+
+// GET /api/portal/cuotas  → { esSocio: false } o { esSocio: true, situacion, montoAdeudado, pendientes, historial, pagoEnLinea }
+export const cuotas = bloque(cuotasDelJugador, 'No se pudieron obtener las cuotas')

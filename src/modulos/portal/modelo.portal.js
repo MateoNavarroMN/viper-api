@@ -1,11 +1,14 @@
 import { pool } from '../../config/conexion.bd.js'
 import { pareja } from '../calendario/modelo.calendario.js'
+import { obtenerMisCuotas } from '../cuotas/modelo.mis.cuotas.js'
+import { obtenerDetalleRanking } from '../ranking/modelo.ranking.js'
 import { buscarSocioDeJugador } from '../socios/modelo.socios.js'
 import { obtenerCuadro } from '../torneos/modelo.cuadro.torneos.js'
 
 // Portal del Jugador (CU 6.4, solo lectura). Cada bloque del panel tiene su propia consulta para que el error de uno
 // no tire abajo a los demás. Todas reciben el jugador de la sesión: nunca un id que venga por URL.
 
+const DISCIPLINAS = ['TENIS', 'PADEL']
 const EXTRACTO = 160
 
 // Es socio mientras su socio esté ACTIVO (con la baja deja de ver lo que es solo para socios)
@@ -40,6 +43,21 @@ export const buscarEnCartelera = async (jugadorId, id, db = pool) => {
     [socio, id]
   )
   return rows[0] ?? null
+}
+
+// ── Ranking ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+// Una entrada por disciplina: posición, puntos y categoría. Quien todavía no tiene puntos sale en su categoría inicial
+// con 0 puntos y `sinPuntos: true`, para que la pantalla muestre la leyenda correspondiente.
+export const rankingDelJugador = async (jugadorId, db = pool) => {
+  const filas = []
+  for (const disciplina of DISCIPLINAS) {
+    const detalle = await obtenerDetalleRanking(disciplina, jugadorId, db)
+    filas.push(detalle
+      ? { disciplina, participa: true, posicion: detalle.posicion, puntos: detalle.puntosTotales, categoria: detalle.categoria.nombre, sinPuntos: detalle.puntosTotales === 0 }
+      : { disciplina, participa: false })
+  }
+  return filas
 }
 
 // ── Próximos partidos ─────────────────────────────────────────────────────────────────────────────────────────
@@ -117,4 +135,21 @@ export const torneosEnCurso = async (jugadorId, db = pool) => {
     })
   }
   return torneos
+}
+
+// ── Cuotas ────────────────────────────────────────────────────────────────────────────────────────────────────
+
+// { esSocio: false } si no es socio activo. Si lo es: situación (AL_DIA / ADEUDADO), monto adeudado (suma de las cuotas
+// vencidas), cuotas pendientes con su vencimiento e historial de pagos. Un socio sin cuotas recibe listas vacías.
+export const cuotasDelJugador = async (jugadorId, db = pool) => {
+  const datos = await obtenerMisCuotas(jugadorId, db)
+  if (!datos) return { esSocio: false }
+  return {
+    esSocio: true,
+    situacion: datos.situacion,
+    montoAdeudado: datos.montoAdeudado,
+    pendientes: datos.cuotas.filter((c) => c.estadoPago === 'PENDIENTE').reverse(),
+    historial: datos.cuotas.filter((c) => c.estadoPago === 'PAGADO'),
+    pagoEnLinea: datos.pagoEnLinea,
+  }
 }
