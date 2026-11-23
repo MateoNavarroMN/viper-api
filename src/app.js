@@ -37,6 +37,7 @@ import rutasPagos from './modulos/pagos/rutas.pagos.js'
 import rutasComunicados from './modulos/comunicados/rutas.comunicados.js'
 import rutasPortal from './modulos/portal/rutas.portal.js'
 import rutasDashboard from './modulos/dashboard/rutas.dashboard.js'
+import rutasReportes from './modulos/reportes/rutas.reportes.js'
 
 const app = express()
 
@@ -46,7 +47,8 @@ const origenes = process.env.CORS_ORIGIN
   : '*'
 
 // Middlewares
-app.use(cors({ origin: origenes }))
+// `Content-Disposition` se expone para que el front lea el nombre del archivo en las descargas (reportes)
+app.use(cors({ origin: origenes, exposedHeaders: ['Content-Disposition'] }))
 app.use(express.json())
 
 // Ruta de salud: además de responder, comprueba que la base de datos contesta
@@ -96,6 +98,7 @@ app.use('/api/pagos', rutasPagos)
 app.use('/api/comunicados', rutasComunicados)
 app.use('/api/portal', rutasPortal)
 app.use('/api/dashboard', rutasDashboard)
+app.use('/api/reportes', rutasReportes)
 
 // Ruta no encontrada
 app.use((req, res) => {
