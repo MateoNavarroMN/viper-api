@@ -87,12 +87,69 @@ const leerOrigen = async (concepto, origenId, solo, db) => {
   }
 }
 
+// Pesos con dos decimales sin errores de punto flotante (se suma en centavos)
+const aCentavos = (monto) => Math.round(Number(monto) * 100)
+
+// Venta de la tienda (sin origen): revisa que los productos se puedan vender y deja el movimiento PENDIENTE con su detalle.
+// El stock NO se toca acá: se descuenta cuando el pago se acredita (ver aplicarOrden). Si el pago nunca llega, no hay nada que devolver.
+// `lineas` = [{ productoId, cantidad }] ya validadas y sin repetidos. Devuelve el mismo formato que registrarIntentoDePago;
+// si hay productos sin stock o dados de baja, { resultado: 'RECHAZADO', mensaje, lineas: [...] } con cada línea a corregir.
+const registrarIntentoTienda = async ({ lineas, operadorId }) => {
+  const cliente = await pool.connect()
+  try {
+    await cliente.query('begin')
+    const { rows } = await cliente.query(
+      `select id, nombre, precio, stock_actual as "stockActual", activo from producto where id = any($1::uuid[])`,
+      [lineas.map((l) => l.productoId)]
+    )
+    const productos = new Map(rows.map((fila) => [fila.id, fila]))
+
+    const problemas = []
+    for (const { productoId, cantidad } of lineas) {
+      const p = productos.get(productoId)
+      if (!p || !p.activo) problemas.push({ productoId, nombre: p?.nombre ?? null, motivo: 'NO_DISPONIBLE', cantidad, stockDisponible: 0 })
+      else if (p.stockActual < cantidad) problemas.push({ productoId, nombre: p.nombre, motivo: 'STOCK_INSUFICIENTE', cantidad, stockDisponible: p.stockActual })
+    }
+    if (problemas.length > 0) {
+      await cliente.query('rollback')
+      const sinProducto = problemas.some((l) => l.motivo === 'NO_DISPONIBLE')
+      return { resultado: 'RECHAZADO', mensaje: sinProducto ? 'Hay productos que ya no están disponibles' : 'No hay stock suficiente para alguno de los productos', lineas: problemas }
+    }
+
+    const detalle = lineas.map(({ productoId, cantidad }) => ({ productoId, cantidad, precioUnitario: Number(productos.get(productoId).precio) }))
+    const total = detalle.reduce((suma, l) => suma + aCentavos(l.precioUnitario) * l.cantidad, 0) / 100
+    if (!(total > 0)) {
+      await cliente.query('rollback')
+      return { resultado: 'RECHAZADO', mensaje: 'El total de la venta tiene que ser mayor a cero' }
+    }
+
+    // Venta de mostrador: sin cliente (consumidor final). Queda anotado quién la cobra.
+    const { rows: nueva } = await cliente.query(
+      `insert into transaccion_caja (tipo_movimiento, concepto, descripcion, monto, metodo_pago, estado, operador_usuario_id)
+       values ('INGRESO', 'TIENDA', 'Venta de mostrador · Pago en línea', $1, 'MERCADO_PAGO', 'PENDIENTE', $2) returning id`,
+      [total, operadorId]
+    )
+    for (const l of detalle) {
+      await cliente.query('insert into detalle_venta (transaccion_id, producto_id, cantidad, precio_unitario) values ($1, $2, $3, $4)', [nueva[0].id, l.productoId, l.cantidad, l.precioUnitario])
+    }
+    await cliente.query('commit')
+    const unidades = detalle.reduce((suma, l) => suma + l.cantidad, 0)
+    return { resultado: 'OK', transaccionId: nueva[0].id, titulo: `Tienda · ${unidades} ${unidades === 1 ? 'producto' : 'productos'}`, monto: total, minutosDeVigencia: 60 }
+  } catch (error) {
+    await cliente.query('rollback').catch(() => {})
+    throw error
+  } finally {
+    cliente.release()
+  }
+}
+
 // Valida el origen y deja registrado el intento: un movimiento INGRESO / MERCADO_PAGO / PENDIENTE con su cliente y su origen.
 // Todo en una transacción: dos pedidos a la vez sobre el mismo origen se ordenan con un candado, y los intentos anteriores que
 // seguían pendientes se anulan (solo vale el último). No pide que la caja esté abierta: el movimiento queda pendiente y recién
 // se asienta cuando el pago se acredita.
 // Devuelve { resultado: 'OK', transaccionId, titulo, monto, minutosDeVigencia } o el rechazo de leerOrigen.
-export const registrarIntentoDePago = async ({ concepto, origenId, usuarioId }) => {
+export const registrarIntentoDePago = async ({ concepto, origenId, usuarioId, lineas, operadorId }) => {
+  if (concepto === 'TIENDA') return registrarIntentoTienda({ lineas, operadorId })
   const cliente = await pool.connect()
   try {
     await cliente.query('begin')

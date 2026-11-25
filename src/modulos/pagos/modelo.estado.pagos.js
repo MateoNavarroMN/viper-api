@@ -105,7 +105,7 @@ export const armarRespuesta = async (t) => {
     requiereDevolucion: t.requiereDevolucion,
     origen: {
       tipo: t.concepto,
-      id: t.reserva_id ?? t.inscripcion_id ?? t.cuota_id,
+      id: t.reserva_id ?? t.inscripcion_id ?? t.cuota_id ?? null,
       estado: t.estadoOrigen,
       pagado: Boolean(t.origenPagado),
     },
@@ -121,14 +121,17 @@ export const armarRespuesta = async (t) => {
 const MOTIVOS_REVISABLES = [MOTIVO_REEMPLAZADO, MOTIVO_CANCELADO, MOTIVO_VENCIDO]
 export const conciliar = async (t, db = pool) => {
   if (t.estado === 'APROBADO' || t.estado === 'RECHAZADO') return false
+  // La tienda no tiene origen: solo se revisa este mismo pago
   const columna = COLUMNA_ORIGEN[t.concepto]
+  const valores = [t.id, MOTIVOS_REVISABLES]
+  if (columna) valores.push(t.reserva_id ?? t.inscripcion_id ?? t.cuota_id)
   const { rows } = await db.query(
     `select id, mp_preference_id as "ordenId" from transaccion_caja
       where metodo_pago = 'MERCADO_PAGO' and mp_preference_id is not null
-        and (estado = 'PENDIENTE' or (estado = 'ANULADO' and motivo_anulacion = any($3)))
-        and (id = $1 or (${columna} = $2 and fecha_hora > now() - interval '1 day'))
+        and (estado = 'PENDIENTE' or (estado = 'ANULADO' and motivo_anulacion = any($2)))
+        and (id = $1${columna ? ` or (${columna} = $3 and fecha_hora > now() - interval '1 day')` : ''})
       order by fecha_hora desc`,
-    [t.id, t.reserva_id ?? t.inscripcion_id ?? t.cuota_id, MOTIVOS_REVISABLES]
+    valores
   )
   for (const fila of rows) {
     try {
@@ -144,7 +147,7 @@ export const conciliar = async (t, db = pool) => {
 
 // Si este intento quedó anulado porque lo que se quería pagar se acreditó con otro, devuelve ese otro (el que está Aprobado).
 export const leerIntentoAcreditado = async (t, db = pool) => {
-  if (t.estado !== 'ANULADO' || t.motivo !== MOTIVO_OTRO_INTENTO) return null
+  if (t.estado !== 'ANULADO' || t.motivo !== MOTIVO_OTRO_INTENTO || !COLUMNA_ORIGEN[t.concepto]) return null
   const { rows } = await db.query(
     `select id from transaccion_caja where ${COLUMNA_ORIGEN[t.concepto]} = $1 and metodo_pago = 'MERCADO_PAGO' and estado = 'APROBADO' order by fecha_hora desc limit 1`,
     [t.reserva_id ?? t.inscripcion_id ?? t.cuota_id]
