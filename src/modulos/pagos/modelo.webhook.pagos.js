@@ -1,6 +1,7 @@
 import { pool } from '../../config/conexion.bd.js'
 import { cobrarOrigen } from '../caja/cobros.caja.js'
 import { asegurarCajaAbierta, esCajaCerrada } from '../caja/modelo.caja.js'
+import { actualizarStock } from '../productos/modelo.productos.js'
 
 // Qué hacer con un aviso de Mercado Pago (CU 5.4). El aviso solo trae el id de la orden: el estado, el monto y la referencia salen de
 // la consulta a Mercado Pago. Este archivo recibe esa orden ya consultada y actualiza el movimiento pendiente que le corresponde.
@@ -22,6 +23,24 @@ export const idDePago = (orden) => orden.transactions?.payments?.[0]?.id ?? orde
 // Guarda el aviso (resumido, sin datos de pago) para poder revisar qué llegó y qué se hizo con él.
 export const registrarNotificacion = async ({ paymentId, resumen, resultado }, db = pool) => {
   await db.query('insert into notificacion_mp (payment_id, payload, resultado) values ($1, $2, $3)', [paymentId ?? null, JSON.stringify(resumen), resultado])
+}
+
+// Venta de la tienda acreditada: descuenta del stock lo que se vendió. Todo o nada: si falta stock de algún producto (se vendió en el
+// mostrador mientras se pagaba) no se toca ninguno y devuelve false, para que el pago quede marcado para devolver.
+// Los productos se bloquean siempre por id, igual que en el punto de venta, para que dos ventas no se esperen en círculo.
+const descontarStockDeVenta = async (transaccionId, db) => {
+  const { rows } = await db.query(
+    `select producto_id as "productoId", sum(cantidad)::int as cantidad from detalle_venta where transaccion_id = $1 group by producto_id order by producto_id`,
+    [transaccionId]
+  )
+  await db.query('select 1 from producto where id = any($1::uuid[]) order by id for update', [rows.map((l) => l.productoId)])
+  const { rows: actuales } = await db.query('select id, stock_actual as "stockActual" from producto where id = any($1::uuid[])', [rows.map((l) => l.productoId)])
+  const stock = new Map(actuales.map((p) => [p.id, p.stockActual]))
+  if (rows.some((l) => (stock.get(l.productoId) ?? 0) < l.cantidad)) return false
+  for (const l of rows) {
+    if ((await actualizarStock(l.productoId, -l.cantidad, db)) === null) throw new Error(`No se pudo descontar el stock del producto ${l.productoId}`)
+  }
+  return true
 }
 
 // Aplica una orden consultada a su movimiento. Todo en una transacción. Devuelve el resultado como texto:
@@ -91,13 +110,14 @@ export const aplicarOrden = async (orden) => {
       cajaCerrada = true
     }
 
+    // La tienda no tiene origen (reserva, inscripción o cuota): lo que se confirma es el stock de lo vendido
+    const esTienda = t.concepto === 'TIENDA'
     const columna = COLUMNA_ORIGEN[t.concepto]
-    const origenId = t[{ reserva_id: 'reservaId', inscripcion_id: 'inscripcionId', cuota_id: 'cuotaId' }[columna]]
-    const cobro = await cobrarOrigen(t.concepto, origenId, 'MERCADO_PAGO', null, cliente)
-    const confirmado = cobro.resultado === 'OK'
+    const origenId = esTienda ? null : t[{ reserva_id: 'reservaId', inscripcion_id: 'inscripcionId', cuota_id: 'cuotaId' }[columna]]
+    const confirmado = esTienda ? await descontarStockDeVenta(t.id, cliente) : (await cobrarOrigen(t.concepto, origenId, 'MERCADO_PAGO', null, cliente)).resultado === 'OK'
 
     let descripcion = t.descripcion ?? ''
-    if (!confirmado) descripcion += ' · Pago acreditado sin poder confirmar: revisar la devolución'
+    if (!confirmado) descripcion += esTienda ? ' · Pago acreditado sin stock suficiente: revisar la devolución' : ' · Pago acreditado sin poder confirmar: revisar la devolución'
     if (cajaCerrada) descripcion += ' · Acreditado con la caja cerrada: se asienta en la jornada siguiente'
 
     await cliente.query(
@@ -110,11 +130,13 @@ export const aplicarOrden = async (orden) => {
       [t.id, idDePago(orden), !confirmado, descripcion.trim() || null, cajaCerrada]
     )
     // Si había otros intentos de pago del mismo origen todavía pendientes, ya no hacen falta
-    await cliente.query(
-      `update transaccion_caja set estado = 'ANULADO', motivo_anulacion = 'El pago se acreditó con otro intento', fecha_anulacion = now()
-        where ${columna} = $1 and metodo_pago = 'MERCADO_PAGO' and estado = 'PENDIENTE' and id <> $2`,
-      [origenId, t.id]
-    )
+    if (!esTienda) {
+      await cliente.query(
+        `update transaccion_caja set estado = 'ANULADO', motivo_anulacion = 'El pago se acreditó con otro intento', fecha_anulacion = now()
+          where ${columna} = $1 and metodo_pago = 'MERCADO_PAGO' and estado = 'PENDIENTE' and id <> $2`,
+        [origenId, t.id]
+      )
+    }
     await cliente.query('commit')
     return confirmado ? 'PROCESADA' : 'DEVOLUCION_PENDIENTE'
   } catch (error) {
